@@ -2,15 +2,23 @@ use std::io::{self, Write};
 use std::time::Duration;
 use std::{thread, time};
 
+mod device_info;
+mod ydlidar_models;
+
 use serialport::SerialPort;
 
 use clap::{Arg, Command};
 
+const HEADER_SIZE : usize = 7;
 const LIDAR_CMD_GET_DEVICE_HEALTH : u8 = 0x92;
+const LIDAR_CMD_GET_DEVICE_INFO : u8 = 0x90;
 const LIDAR_CMD_SYNC_BYTE : u8 = 0xA5;
 const LIDAR_CMD_FORCE_STOP : u8 = 0x00;
 const LIDAR_CMD_STOP : u8 = 0x65;
 const LIDAR_CMD_SCAN : u8 = 0x60;
+const LIDAR_ANS_TYPE_DEVINFO : u8 = 0x4;
+const LIDAR_ANS_TYPE_DEVHEALTH : u8 = 0x6;
+const LIDAR_ANS_TYPE_MEASUREMENT : u8 = 0x81;
 
 fn to_string(data: &[u8]) -> String {
     return data.iter().map(|e| format!("{:02x}", e)).collect::<Vec<_>>().join(" ");
@@ -55,7 +63,7 @@ fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Resu
         }
 
         if n_read < data_size {
-            let m = format!("Expected {} bytes but obtained {} bytes.", data_size, n_read);
+            let m = format!("Tried to read {} bytes but obtained {} bytes.", data_size, n_read);
             return Err(other_error(&m));
         }
 
@@ -69,13 +77,63 @@ fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Resu
     return Err(timeout_error("Operation timed out"));
 }
 
-fn get_device_health(port: &mut Box<dyn SerialPort>) {
+fn validate_response_header(header: &Vec<u8>, maybe_response_length: Option<u8>, type_code: u8) -> Result<(), String> {
+    if header.len() != HEADER_SIZE {
+        return Err(format!("Response header must be always seven bytes. Observed = {} bytes.", header.len()));
+    }
+    if header[0] != 0xA5 || header[1] != 0x5A {
+        return Err(format!("Header sign must with 0xA55A. Observed = {}", to_string(&header[0..2])));
+    }
+    match maybe_response_length {
+        None => (),
+        Some(len) => {
+            if header[2] != len {
+                return Err(format!("Expected response length of {} bytes. Observed = {}", len, header[2]));
+            }
+        }
+    }
+    if header[6] != type_code {
+        return Err(format!("Expected type code {}. Observed = {}", type_code, header[2]));
+    }
+    return Ok(());
+}
+
+fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     send_command(port, LIDAR_CMD_GET_DEVICE_HEALTH);
-    let data = match read(port, 7, 10) {
-        Ok(d) => d,
-        Err(e) => panic!("{:?}", e),
+    let header = read(port, HEADER_SIZE, 10).unwrap();
+    validate_response_header(&header, Some(3), LIDAR_ANS_TYPE_DEVHEALTH).unwrap();
+    let health = read(port, 3, 10).unwrap();
+    println!("Received header = {}", to_string(&header));
+    println!("Response = {}", to_string(&health));
+
+    if health[0] != 0 {
+        return Err(format!(
+                "Device health error. Error code = {:08b}. \
+                 See the development manual for details.", health[0]));
+    }
+    return Ok(());
+}
+
+fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
+    send_command(port, LIDAR_CMD_GET_DEVICE_INFO);
+    let header = read(port, HEADER_SIZE, 10).unwrap();
+    validate_response_header(&header, Some(20), LIDAR_ANS_TYPE_DEVINFO).unwrap();
+    let info = read(port, 20, 10).unwrap();
+    println!("Received header = {}", to_string(&header));
+    println!("Response = {}", to_string(&info));
+    return device_info::DeviceInfo {
+        model_number: info[0],
+        firmware_major_version: info[1],
+        firmware_minor_version: info[2],
+        hardware_version: info[3],
+        serial_number: info[4..20].try_into().unwrap(),
     };
-    println!("Received data = {}", to_string(&data));
+}
+
+fn start_scan(port: &mut Box<dyn SerialPort>) {
+    send_command(port, LIDAR_CMD_SCAN);
+    let header = read(port, HEADER_SIZE, 10).unwrap();
+    validate_response_header(&header, None, LIDAR_ANS_TYPE_MEASUREMENT).unwrap();
 }
 
 fn stop_scan(port: &mut Box<dyn SerialPort>) {
@@ -99,18 +157,26 @@ fn main() {
     let port_name = matches.value_of("port").unwrap();
     let baud_rate = 230400;
 
-    let port = serialport::new(port_name, baud_rate)
+    let maybe_port = serialport::new(port_name, baud_rate)
         .timeout(Duration::from_millis(10))
         .open();
 
-    match port {
-        Ok(mut port) => {
-            stop_scan(&mut port);
-            get_device_health(&mut port);
-        }
+    let mut port = match maybe_port {
+        Ok(port) => port,
         Err(e) => {
             eprintln!("Failed to open \"{}\". Error: {}", port_name, e);
             ::std::process::exit(1);
         }
+    };
+
+    stop_scan(&mut port);
+    check_device_health(&mut port).unwrap();
+    let device_info = get_device_info(&mut port);
+    if device_info.model_number != ydlidar_models::YdlidarModels::T_MINI_PRO {
+        println!("This package can handle only YDLiDAR T-mini Pro.");
+        std::process::exit(1);
     }
+    start_scan(&mut port);
+    sleep_ms(10000);
+    stop_scan(&mut port);
 }
