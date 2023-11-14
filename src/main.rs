@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 use std::time::Duration;
 use std::{thread, time};
+use std::sync::mpsc;
 
 mod device_info;
 mod ydlidar_models;
@@ -52,6 +53,22 @@ fn other_error(message: &str) -> io::Error {
     return io::Error::new(io::ErrorKind::Other, message);
 }
 
+fn flush(port: &mut Box<dyn SerialPort>) {
+    let mut f = || -> () {
+        let n_u32: u32 = port.bytes_to_read().unwrap();
+        let n_read: usize = n_u32.try_into().unwrap();
+        if n_read == 0 {
+            return;
+        }
+        let mut serial_buf: Vec<u8> = vec![0; n_read];
+        port.read(serial_buf.as_mut_slice()).unwrap();
+    };
+
+    for _ in 0..10 {
+        f();
+    }
+}
+
 fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Result<Vec<u8>, io::Error> {
     for _ in 0..n_trials {
         let n_u32: u32 = port.bytes_to_read().unwrap();
@@ -101,9 +118,9 @@ fn validate_response_header(header: &Vec<u8>, maybe_response_length: Option<u8>,
 fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     send_command(port, LIDAR_CMD_GET_DEVICE_HEALTH);
     let header = read(port, HEADER_SIZE, 10).unwrap();
+    println!("Received header = {}", to_string(&header));
     validate_response_header(&header, Some(3), LIDAR_ANS_TYPE_DEVHEALTH).unwrap();
     let health = read(port, 3, 10).unwrap();
-    println!("Received header = {}", to_string(&header));
     println!("Response = {}", to_string(&health));
 
     if health[0] != 0 {
@@ -170,13 +187,42 @@ fn main() {
     };
 
     stop_scan(&mut port);
+    flush(&mut port);
     check_device_health(&mut port).unwrap();
     let device_info = get_device_info(&mut port);
     if device_info.model_number != ydlidar_models::YdlidarModels::T_MINI_PRO {
         println!("This package can handle only YDLiDAR T-mini Pro.");
         std::process::exit(1);
     }
+
     start_scan(&mut port);
-    sleep_ms(10000);
+
+    let (tx, rx) = mpsc::channel::<bool>();
+
+    let handle = std::thread::spawn(move || -> Box<dyn SerialPort> {
+        let mut is_scanning: bool = true;
+        while is_scanning {
+            let n_u32: u32 = port.bytes_to_read().unwrap();
+            let n_read: usize = n_u32.try_into().unwrap();
+            if n_read == 0 {
+                continue;
+            }
+            let mut serial_buf: Vec<u8> = vec![0; n_read];
+            match port.read(serial_buf.as_mut_slice()) {
+                Ok(n) => println!("Read {} bytes: {}", n, to_string(&serial_buf)),
+                Err(e) => eprintln!("{e}"),
+            }
+
+            is_scanning = match rx.try_recv() {
+                Ok(s) => s,
+                Err(_) => true,
+            }
+        }
+        return port;
+    });
+
+    sleep_ms(4000);
+    tx.send(false).unwrap();
+    let mut port = handle.join().unwrap();
     stop_scan(&mut port);
 }
