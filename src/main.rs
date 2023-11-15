@@ -66,6 +66,7 @@ fn flush(port: &mut Box<dyn SerialPort>) {
 
     for _ in 0..10 {
         f();
+        sleep_ms(10);
     }
 }
 
@@ -123,7 +124,7 @@ fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     let health = read(port, 3, 10).unwrap();
     println!("Response = {}", to_string(&health));
 
-    if health[0] != 0 {
+    if health[0] != 0 {  // Last two bit are reserved bits, which should be ignored.
         return Err(format!(
                 "Device health error. Error code = {:08b}. \
                  See the development manual for details.", health[0]));
@@ -157,6 +158,60 @@ fn stop_scan(port: &mut Box<dyn SerialPort>) {
     send_command(port, LIDAR_CMD_FORCE_STOP);
     sleep_ms(10);
     send_command(port, LIDAR_CMD_STOP);
+}
+
+fn to_angle(bit1: u8, bit2: u8) -> f64 {
+    assert_eq!((bit2 as u16) * 0x100, (bit2 as u16) << 8);
+    let a = ((bit1 as u16) + ((bit2 as u16) << 8)) >> 1;
+    return (a as f64) / 64.;
+}
+
+fn calc_angles(start_angle: f64, end_angle: f64, n_scan_samples: usize) -> Vec<f64> {
+    let n = (n_scan_samples - 1) as f64;
+
+    let angle_rate: f64 = if start_angle < end_angle {
+        (end_angle - start_angle) / n
+    } else {
+        (end_angle - start_angle + 360.) / n
+    };
+
+    return (0..n_scan_samples).map(|i| ((i as f64) * angle_rate + start_angle) % 360.).collect::<Vec<_>>();
+}
+
+fn get_flags(packet : &[u8], n_scan_samples: usize) -> Vec<u8> {
+    (0..n_scan_samples).map(|i| packet[10 + i * 3 + 1] & 0x03).collect::<Vec<_>>()
+}
+
+fn get_intensities(packet : &[u8], n_scan_samples: usize) -> Vec<u8> {
+    (0..n_scan_samples).map(|i| packet[(10 + i * 3) as usize] as u8).collect::<Vec<_>>()
+}
+
+fn calc_distance(b1: u8, b2 : u8) -> u16 {
+    return ((b2 as u16) << 6) + ((b1 as u16) >> 2);
+}
+
+fn get_distances(packet : &[u8], n_scan_samples: usize) -> Vec<u16> {
+    (0..n_scan_samples).map(|i| calc_distance(packet[i + 1], packet[i + 2])).collect::<Vec<_>>()
+}
+
+fn parse_scan(scan_packet : &[u8]) -> (Vec<f64>, Vec<u8>, Vec<u8>, Vec<u16>) {
+    // println!("PH {}", to_string(&scan_packet[0..2]));
+    // println!("CT {}", scan_packet[2] & 0x01);
+    let n_scan_samples = scan_packet[3] as usize;
+    let start_angle = to_angle(scan_packet[4], scan_packet[5]);
+    let end_angle = to_angle(scan_packet[6], scan_packet[7]);
+
+    let expected_packet_size = 10 + n_scan_samples * 3;
+    if scan_packet.len() < expected_packet_size {
+        panic!("Scan packet size is insufficient. Required at least {expected_packet_size} bytes.");
+    }
+
+    let angles = calc_angles(start_angle, end_angle, n_scan_samples);
+    let indices = (0..n_scan_samples).map(|i| (10 + i * 3) as usize);
+    let intensities = get_intensities(scan_packet, n_scan_samples);
+    let flags = get_flags(scan_packet, n_scan_samples);
+    let distances = get_distances(scan_packet, n_scan_samples);
+    return (angles, intensities, flags, distances);
 }
 
 fn main() {
@@ -208,10 +263,12 @@ fn main() {
                 continue;
             }
             let mut serial_buf: Vec<u8> = vec![0; n_read];
-            match port.read(serial_buf.as_mut_slice()) {
-                Ok(n) => println!("Read {} bytes: {}", n, to_string(&serial_buf)),
-                Err(e) => eprintln!("{e}"),
-            }
+            port.read(serial_buf.as_mut_slice()).unwrap();
+            let (angles, intensities, flags, distances) = parse_scan(&serial_buf);
+            println!("angles = {:?}", angles);
+            println!("intensities = {:?}", intensities);
+            println!("flags = {:?}", flags);
+            println!("distances = {:?}", distances);
 
             is_scanning = match rx.try_recv() {
                 Ok(s) => s,
@@ -225,4 +282,5 @@ fn main() {
     tx.send(false).unwrap();
     let mut port = handle.join().unwrap();
     stop_scan(&mut port);
+    flush(&mut port);
 }
