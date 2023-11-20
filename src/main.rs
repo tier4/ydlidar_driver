@@ -2,6 +2,7 @@ use std::io::{self, Write};
 use std::time::Duration;
 use std::{thread, time};
 use std::sync::mpsc;
+use std::collections::VecDeque;
 
 use std::fs::File;
 
@@ -55,15 +56,20 @@ fn other_error(message: &str) -> io::Error {
     return io::Error::new(io::ErrorKind::Other, message);
 }
 
+fn get_n_read(port: &mut Box<dyn SerialPort>) -> usize {
+    let n_u32: u32 = port.bytes_to_read().unwrap();
+    let n_read: usize = n_u32.try_into().unwrap();
+    n_read
+}
+
 fn flush(port: &mut Box<dyn SerialPort>) {
     let mut f = || -> () {
-        let n_u32: u32 = port.bytes_to_read().unwrap();
-        let n_read: usize = n_u32.try_into().unwrap();
+        let n_read: usize = get_n_read(port);
         if n_read == 0 {
             return;
         }
-        let mut serial_buf: Vec<u8> = vec![0; n_read];
-        port.read(serial_buf.as_mut_slice()).unwrap();
+        let mut packet: Vec<u8> = vec![0; n_read];
+        port.read(packet.as_mut_slice()).unwrap();
     };
 
     for _ in 0..10 {
@@ -74,8 +80,7 @@ fn flush(port: &mut Box<dyn SerialPort>) {
 
 fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Result<Vec<u8>, io::Error> {
     for _ in 0..n_trials {
-        let n_u32: u32 = port.bytes_to_read().unwrap();
-        let n_read: usize = n_u32.try_into().unwrap();
+        let n_read: usize = get_n_read(port);
 
         if n_read == 0 {
             sleep_ms(10);
@@ -87,12 +92,12 @@ fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Resu
             return Err(other_error(&m));
         }
 
-        let mut serial_buf: Vec<u8> = vec![0; data_size];
-        match port.read(serial_buf.as_mut_slice()) {
+        let mut packet: Vec<u8> = vec![0; data_size];
+        match port.read(packet.as_mut_slice()) {
             Ok(n) => println!("Read {} bytes", n),
             Err(e) => return Err(e),
         }
-        return Ok(serial_buf);
+        return Ok(packet);
     }
     return Err(timeout_error("Operation timed out"));
 }
@@ -216,15 +221,19 @@ fn check_packet_size(packet: &[u8]) {
     }
 }
 
+fn is_packet_header(element0: u8, element1: u8) -> bool {
+    element0 == 0xAA && element1 == 0x55
+}
+
 fn check_scan_packet_header(packet: &[u8]) {
-    if packet[0] == 0xAA && packet[1] == 0x55 {
+    if is_packet_header(packet[0], packet[1]) {
         return;
     }
     panic!("Scan packet must start with 0xAA55");
 }
 
-fn is_start_packet(packet: &[u8]) -> bool {
-    packet[2] & 0x01 == 1
+fn is_beginning_of_cycle(chunk: &[u8]) -> bool {
+    chunk[2] & 0x01 == 1
 }
 
 fn parse_scan(packet: &[u8]) -> (Vec<f64>, Vec<u8>, Vec<u8>, Vec<u16>) {
@@ -257,12 +266,14 @@ fn polar_to_cartesian(angles: &[f64], distances: &[f64]) -> (Vec<f64>, Vec<f64>)
 
 fn split(packet: &[u8]) -> Vec<usize> {
     let mut indices = Vec::new();
+    if packet.len() == 0 {
+        return indices;
+    }
     for i in 0..(packet.len()-1) {
         if packet[i+0] == 0xAA && packet[i+1] == 0x55 {
             indices.push(i);
         }
     }
-    indices.push(packet.len());
     return indices;
 }
 
@@ -271,6 +282,9 @@ mod tests {
     // Note this useful idiom: importing names from outer (for mod tests) scope.
     use super::*;
 
+    fn test_sendable_packet_range() {
+    }
+
     #[test]
     fn test_split() {
         let xs = split(
@@ -278,9 +292,47 @@ mod tests {
            &[0xAA, 0x55, 0x00, 0x28, 0xF5, 0x82, 0xCF, 0x94, 0xD8, 0x6F,
              0xAA, 0x55, 0x82, 0x28, 0x41, 0x95, 0xE3, 0xA6, 0x6A, 0x4F,
              0xAA, 0x55, 0x00, 0x28, 0x55, 0xA7, 0xD9, 0x04, 0xB8, 0xDC]);
-        assert_eq!(xs.len(), 4);
-        assert_eq!(xs, vec![0, 10, 20, 30]);
+        assert_eq!(xs.len(), 3);
+        assert_eq!(xs, vec![0, 10, 20]);
     }
+}
+
+fn find_start_index(buffer: &VecDeque<u8>) -> Result<usize, ()> {
+    if buffer.len() == 0 {
+        return Err(());
+    }
+    for i in 0..(buffer.len()-1) {
+        let e0 = match buffer.get(i+0) {
+            Some(e) => e,
+            None => continue,
+        };
+        let e1 = match buffer.get(i+1) {
+            Some(e) => e,
+            None => continue,
+        };
+        if is_packet_header(*e0, *e1) {
+            return Ok(i);
+        }
+    }
+    Err(())
+}
+
+fn find_end_index(buffer: &VecDeque<u8>, start_index: usize) -> Result<usize, ()> {
+    let s = start_index + 3;
+    if s >= buffer.len() {
+        return Err(());
+    }
+    let n_scan_samples = match buffer.get(start_index + 3) {
+        Some(n) => n,
+        None => return Err(()),
+    };
+    Ok((10 + n_scan_samples * 3) as usize)
+}
+
+fn sendable_packet_range(buffer: &VecDeque<u8>) -> Result<(usize, usize), ()> {
+    let start_index = find_start_index(buffer)?;
+    let end_index = find_end_index(buffer, start_index)?;
+    Ok((start_index, end_index))
 }
 
 fn main() {
@@ -321,43 +373,65 @@ fn main() {
 
     start_scan(&mut port);
 
-    let (tx, rx) = mpsc::channel::<bool>();
-
-    let handle = std::thread::spawn(move || -> Box<dyn SerialPort> {
+    let (reader_terminator_tx, reader_terminator_rx) = mpsc::channel::<bool>();
+    let (scan_data_tx, scan_data_rx) = mpsc::sync_channel::<Vec<u8>>(200);
+    let scan_data_receiver = std::thread::spawn(move || -> Box<dyn SerialPort> {
         let mut is_scanning: bool = true;
-        let mut index = 0;
-        let mut starts = Vec::new();
         while is_scanning {
-            let n_u32: u32 = port.bytes_to_read().unwrap();
-            let n_read: usize = n_u32.try_into().unwrap();
+            let n_read: usize = get_n_read(&mut port);
             if n_read == 0 {
+                println!("n_read == 0");
                 sleep_ms(10);
                 continue;
             }
-            let mut serial_buf: Vec<u8> = vec![0; n_read];
-            port.read(serial_buf.as_mut_slice()).unwrap();
-            // try_split(&serial_buf);
-            let (angles_degree, intensities, flags, distances) = parse_scan(&serial_buf);
-            // let angles_radian = angles_degree.iter().map(|e| e * std::f64::consts::PI / 180.).collect::<Vec<f64>>();
-            let float_distances = distances.iter().map(|e| *e as f64).collect::<Vec<f64>>();
-            write(&format!("scan/{:04}.txt", index), &angles_degree, &float_distances).unwrap();
-            if is_start_packet(&serial_buf) {
-                starts.push(index);
+            let mut packet: Vec<u8> = vec![0; n_read];
+            port.read(packet.as_mut_slice()).unwrap();
+            println!("Read {} bytes.", packet.len());
+            if let Err(e) = scan_data_tx.send(packet) {
+                eprintln!("error: {e}");
             }
-            index += 1;
-
-            is_scanning = match rx.try_recv() {
+            // process(packet);
+            is_scanning = match reader_terminator_rx.try_recv() {
                 Ok(s) => s,
                 Err(_) => true,
             }
         }
-        println!("starts = {:?}", starts);
-        return port;
+        port
+    });
+
+    let (parser_terminator_tx, parser_terminator_rx) = mpsc::channel::<bool>();
+    let scan_parser = std::thread::spawn(move || {
+        let mut is_scanning: bool = true;
+        let mut buffer = VecDeque::<u8>::new();
+        while is_scanning {
+            println!("Parser thread running");
+            match scan_data_rx.try_recv() {
+                Ok(data) => buffer.extend(data),
+                Err(_) => {
+                    sleep_ms(10);
+                }
+            }
+
+            let (start_index, end_index) = match sendable_packet_range(&buffer) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            buffer.drain(..start_index);  // remove leading elements
+            let n_sendable = end_index - start_index;
+            let packet = buffer.drain(0..n_sendable).collect::<Vec<_>>();
+            println!("{}", to_string(&packet));
+            is_scanning = match parser_terminator_rx.try_recv() {
+                Ok(s) => s,
+                Err(_) => true,
+            }
+        }
     });
 
     sleep_ms(10000);
-    tx.send(false).unwrap();
-    let mut port = handle.join().unwrap();
+    reader_terminator_tx.send(false).unwrap();
+    parser_terminator_tx.send(false).unwrap();
+    scan_parser.join().unwrap();
+    let mut port = scan_data_receiver.join().unwrap();
     stop_scan(&mut port);
     flush(&mut port);
 }
