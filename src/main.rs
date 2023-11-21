@@ -3,7 +3,7 @@ use std::time::Duration;
 use std::{thread, time};
 use std::sync::mpsc;
 use std::collections::VecDeque;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{SyncSender, Sender, Receiver};
 
 use std::fs::File;
 
@@ -364,6 +364,75 @@ pub struct Driver {
     tx: Sender<Scan>
 }
 
+fn read_signal(port: &mut Box<dyn SerialPort>, scan_data_tx: SyncSender<Vec<u8>>, reader_terminator_rx: Receiver<bool>) {
+    let mut is_scanning: bool = true;
+    while is_scanning {
+        let n_read: usize = get_n_read(port);
+        if n_read == 0 {
+            sleep_ms(10);
+            continue;
+        }
+        let mut signal: Vec<u8> = vec![0; n_read];
+        port.read(signal.as_mut_slice()).unwrap();
+        println!("Read {} bytes.", signal.len());
+        if let Err(e) = scan_data_tx.send(signal) {
+            eprintln!("error: {e}");
+        }
+        is_scanning = match reader_terminator_rx.try_recv() {
+            Ok(s) => s,
+            Err(_) => true,
+        }
+    }
+}
+
+fn receive_scan(scan_data_rx: Receiver<Vec<u8>>, parser_terminator_rx: Receiver<bool>) {
+    let mut is_scanning: bool = true;
+    let mut buffer = VecDeque::<u8>::new();
+    let mut scan = Scan::new();
+    while is_scanning {
+        match scan_data_rx.try_recv() {
+            Ok(data) => {
+                println!("received data    : {:4} bytes = {}", data.len(), to_string(&data));
+                buffer.extend(data);
+            },
+            Err(_) => {
+                sleep_ms(10);
+            }
+        }
+
+        if buffer.len() == 0 {
+            continue;
+        }
+
+        let (start_index, n_packet_bytes) = match sendable_packet_range(&buffer) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let leading_elements = buffer.drain(..start_index).collect::<Vec<_>>();
+        if buffer.len() < n_packet_bytes {
+            // insufficient buffer size to extract a packet
+            continue;
+        }
+        let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<_>>();
+        println!("leading elements : {:4} bytes = {}", leading_elements.len(), to_string(&leading_elements));
+        println!("packet           : {:4} bytes = {}", packet.len(), to_string(&packet));
+        println!("\n");
+        calc_angles(&packet, &mut scan.angles_radian);
+        calc_distances(&packet, &mut scan.distances);
+        get_intensities(&packet, &mut scan.intensities);
+        get_flags(&packet, &mut scan.flags);
+        if is_beginning_of_cycle(&packet) {
+            // tx.send(scan);
+            scan = Scan::new();
+        }
+
+        is_scanning = match parser_terminator_rx.try_recv() {
+            Ok(s) => s,
+            Err(_) => true,
+        }
+    }
+}
+
 fn main() {
     let matches = Command::new("Serialport Example - Receive Data")
         .about("Reads data from a serial port and echoes it to stdout")
@@ -405,79 +474,13 @@ fn main() {
     let (reader_terminator_tx, reader_terminator_rx) = mpsc::channel::<bool>();
     let (scan_data_tx, scan_data_rx) = mpsc::sync_channel::<Vec<u8>>(200);
     let scan_data_receiver = std::thread::spawn(move || -> Box<dyn SerialPort> {
-        let mut is_scanning: bool = true;
-        while is_scanning {
-            let n_read: usize = get_n_read(&mut port);
-            if n_read == 0 {
-                sleep_ms(10);
-                continue;
-            }
-            let mut packet: Vec<u8> = vec![0; n_read];
-            port.read(packet.as_mut_slice()).unwrap();
-            println!("Read {} bytes.", packet.len());
-            if let Err(e) = scan_data_tx.send(packet) {
-                eprintln!("error: {e}");
-            }
-            // process(packet);
-            is_scanning = match reader_terminator_rx.try_recv() {
-                Ok(s) => s,
-                Err(_) => true,
-            }
-        }
+        read_signal(&mut port, scan_data_tx, reader_terminator_rx);
         port
     });
 
-    // let (scan_data_tx, scan_data_rx) = mpsc::sync_channel::<Vec<u8>>(200);
-
     let (parser_terminator_tx, parser_terminator_rx) = mpsc::channel::<bool>();
     let scan_parser = std::thread::spawn(move || {
-        let mut is_scanning: bool = true;
-        let mut buffer = VecDeque::<u8>::new();
-        let mut scan = Scan::new();
-        while is_scanning {
-            match scan_data_rx.try_recv() {
-                Ok(data) => {
-                    println!("received data    : {:4} bytes = {}", data.len(), to_string(&data));
-                    buffer.extend(data);
-                },
-                Err(_) => {
-                    sleep_ms(10);
-                }
-            }
-
-            if buffer.len() == 0 {
-                continue;
-            }
-
-            let buffer_data = buffer.iter().map(|e| { *e }).collect::<Vec<_>>();
-            println!("buffer elements  : {:4} bytes = {}", buffer_data.len(), to_string(&buffer_data));
-            let (start_index, n_packet_bytes) = match sendable_packet_range(&buffer) {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            let leading_elements = buffer.drain(..start_index).collect::<Vec<_>>();
-            if buffer.len() < n_packet_bytes {
-                // insufficient buffer size to extract a packet
-                continue;
-            }
-            let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<_>>();
-            println!("leading elements : {:4} bytes = {}", leading_elements.len(), to_string(&leading_elements));
-            println!("packet           : {:4} bytes = {}", packet.len(), to_string(&packet));
-            println!("\n");
-            calc_angles(&packet, &mut scan.angles_radian);
-            calc_distances(&packet, &mut scan.distances);
-            get_intensities(&packet, &mut scan.intensities);
-            get_flags(&packet, &mut scan.flags);
-            if is_beginning_of_cycle(&packet) {
-                // tx.send(scan);
-                scan = Scan::new();
-            }
-
-            is_scanning = match parser_terminator_rx.try_recv() {
-                Ok(s) => s,
-                Err(_) => true,
-            }
-        }
+        receive_scan(scan_data_rx, parser_terminator_rx);
     });
 
     sleep_ms(10000);
