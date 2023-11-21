@@ -214,22 +214,24 @@ fn calc_distances(packet : &[u8]) -> Vec<u16> {
     indices.map(|i| calc_distance(packet[i + 1], packet[i + 2])).collect::<Vec<_>>()
 }
 
-fn check_packet_size(packet: &[u8]) {
+fn check_packet_size(packet: &[u8]) -> Result<(), String> {
     let expected = 10 + n_scan_samples(packet) * 3;
-    if packet.len() < expected {
-        panic!("Scan packet size is insufficient. Required at least {expected} bytes.");
+    if packet.len() >= expected {
+        return Ok(());
     }
+    Err(format!("Scan packet size is insufficient. Required {} bytes. Actual {} bytes.",
+                expected, packet.len()))
 }
 
 fn is_packet_header(element0: u8, element1: u8) -> bool {
     element0 == 0xAA && element1 == 0x55
 }
 
-fn check_scan_packet_header(packet: &[u8]) {
+fn check_scan_packet_header(packet: &[u8]) -> Result<(), String> {
     if is_packet_header(packet[0], packet[1]) {
-        return;
+        return Ok(());
     }
-    panic!("Scan packet must start with 0xAA55");
+    Err("Scan packet must start with 0xAA55".to_string())
 }
 
 fn is_beginning_of_cycle(chunk: &[u8]) -> bool {
@@ -237,8 +239,6 @@ fn is_beginning_of_cycle(chunk: &[u8]) -> bool {
 }
 
 fn parse_scan(packet: &[u8]) -> (Vec<f64>, Vec<u8>, Vec<u8>, Vec<u16>) {
-    check_scan_packet_header(packet);
-    check_packet_size(packet);
     let angles = calc_angles(packet);
     let intensities = get_intensities(packet);
     let flags = get_flags(packet);
@@ -317,12 +317,12 @@ fn find_start_index(buffer: &VecDeque<u8>) -> Result<usize, ()> {
     Err(())
 }
 
-fn find_end_index(buffer: &VecDeque<u8>, start_index: usize) -> Result<usize, ()> {
-    let s = start_index + 3;
-    if s >= buffer.len() {
+fn get_packet_size(buffer: &VecDeque<u8>, start_index: usize) -> Result<usize, ()> {
+    let index = start_index + 3;
+    if index >= buffer.len() {
         return Err(());
     }
-    let n_scan_samples = match buffer.get(start_index + 3) {
+    let n_scan_samples = match buffer.get(index) {
         Some(n) => n,
         None => return Err(()),
     };
@@ -331,7 +331,7 @@ fn find_end_index(buffer: &VecDeque<u8>, start_index: usize) -> Result<usize, ()
 
 fn sendable_packet_range(buffer: &VecDeque<u8>) -> Result<(usize, usize), ()> {
     let start_index = find_start_index(buffer)?;
-    let end_index = find_end_index(buffer, start_index)?;
+    let end_index = get_packet_size(buffer, start_index)?;
     Ok((start_index, end_index))
 }
 
@@ -380,7 +380,6 @@ fn main() {
         while is_scanning {
             let n_read: usize = get_n_read(&mut port);
             if n_read == 0 {
-                println!("n_read == 0");
                 sleep_ms(10);
                 continue;
             }
@@ -404,22 +403,39 @@ fn main() {
         let mut is_scanning: bool = true;
         let mut buffer = VecDeque::<u8>::new();
         while is_scanning {
-            println!("Parser thread running");
             match scan_data_rx.try_recv() {
-                Ok(data) => buffer.extend(data),
+                Ok(data) => {
+                    println!("received data    : {:4} bytes = {}", data.len(), to_string(&data));
+                    buffer.extend(data);
+                },
                 Err(_) => {
                     sleep_ms(10);
                 }
             }
 
-            let (start_index, end_index) = match sendable_packet_range(&buffer) {
+            if buffer.len() == 0 {
+                continue;
+            }
+
+            let buffer_data = buffer.iter().map(|e| { *e }).collect::<Vec<_>>();
+            println!("buffer elements  : {:4} bytes = {}", buffer_data.len(), to_string(&buffer_data));
+            let (start_index, n_packet_bytes) = match sendable_packet_range(&buffer) {
                 Ok(t) => t,
                 Err(_) => continue,
             };
-            buffer.drain(..start_index);  // remove leading elements
-            let n_sendable = end_index - start_index;
-            let packet = buffer.drain(0..n_sendable).collect::<Vec<_>>();
-            println!("{}", to_string(&packet));
+            let leading_elements = buffer.drain(..start_index).collect::<Vec<_>>();
+            if buffer.len() < n_packet_bytes {
+                // insufficient buffer size to extract a packet
+                continue;
+            }
+            let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<_>>();
+            println!("leading elements : {:4} bytes = {}", leading_elements.len(), to_string(&leading_elements));
+            println!("packet           : {:4} bytes = {}", packet.len(), to_string(&packet));
+            check_scan_packet_header(&packet).unwrap();
+            if let Err(e) = check_packet_size(&packet) {
+                println!("Error: {e}");
+            }
+            println!("\n");
             is_scanning = match parser_terminator_rx.try_recv() {
                 Ok(s) => s,
                 Err(_) => true,
