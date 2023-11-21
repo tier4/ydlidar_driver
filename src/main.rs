@@ -3,6 +3,7 @@ use std::time::Duration;
 use std::{thread, time};
 use std::sync::mpsc;
 use std::collections::VecDeque;
+use std::sync::mpsc::Sender;
 
 use std::fs::File;
 
@@ -177,7 +178,7 @@ fn n_scan_samples(packet : &[u8]) -> usize {
     packet[3] as usize
 }
 
-fn calc_angles(packet : &[u8]) -> Vec<f64> {
+fn calc_angles(packet : &[u8], angles: &mut Vec<f64>) {
     let start_angle = to_angle(packet[4], packet[5]);
     let end_angle = to_angle(packet[6], packet[7]);
 
@@ -188,30 +189,38 @@ fn calc_angles(packet : &[u8]) -> Vec<f64> {
         (end_angle - start_angle + 360.) / ((n - 1) as f64)
     };
 
-    return (0..n).map(|i| ((i as f64) * angle_rate + start_angle) % 360.).collect::<Vec<_>>();
+    for i in 0..n {
+        let angle_degree = ((i as f64) * angle_rate + start_angle) % 360.;
+        let angle_radian = angle_degree * std::f64::consts::PI / 180.;
+        angles.push(angle_radian);
+    }
 }
 
 fn scan_indices(n_scan_samples: usize) -> impl Iterator<Item = usize> {
     (0..n_scan_samples).map(|i| (10 + i * 3) as usize)
 }
 
-fn get_flags(packet : &[u8]) -> Vec<u8> {
-    let indices = scan_indices(n_scan_samples(packet));
-    indices.map(|i| packet[i + 1] & 0x03).collect::<Vec<_>>()
+fn get_flags(packet : &[u8], flags: &mut Vec<u8>) {
+    for i in scan_indices(n_scan_samples(packet)) {
+        flags.push(packet[i + 1] & 0x03)
+    }
 }
 
-fn get_intensities(packet : &[u8]) -> Vec<u8> {
-    let indices = scan_indices(n_scan_samples(packet));
-    indices.map(|i| packet[i] as u8).collect::<Vec<_>>()
+fn get_intensities(packet : &[u8], intensities: &mut Vec<u8>) {
+    for i in scan_indices(n_scan_samples(packet)) {
+        intensities.push(packet[i] as u8)
+    }
 }
 
 fn calc_distance(b1: u8, b2 : u8) -> u16 {
     ((b2 as u16) << 6) + ((b1 as u16) >> 2)
 }
 
-fn calc_distances(packet : &[u8]) -> Vec<u16> {
-    let indices = scan_indices(n_scan_samples(packet));
-    indices.map(|i| calc_distance(packet[i + 1], packet[i + 2])).collect::<Vec<_>>()
+fn calc_distances(packet : &[u8], distances: &mut Vec<u16>) {
+    for i in scan_indices(n_scan_samples(packet)) {
+        let d = calc_distance(packet[i + 1], packet[i + 2]);
+        distances.push(d);
+    }
 }
 
 fn check_packet_size(packet: &[u8]) -> Result<(), String> {
@@ -234,16 +243,8 @@ fn check_scan_packet_header(packet: &[u8]) -> Result<(), String> {
     Err("Scan packet must start with 0xAA55".to_string())
 }
 
-fn is_beginning_of_cycle(chunk: &[u8]) -> bool {
-    chunk[2] & 0x01 == 1
-}
-
-fn parse_scan(packet: &[u8]) -> (Vec<f64>, Vec<u8>, Vec<u8>, Vec<u16>) {
-    let angles = calc_angles(packet);
-    let intensities = get_intensities(packet);
-    let flags = get_flags(packet);
-    let distances = calc_distances(packet);
-    (angles, intensities, flags, distances)
+fn is_beginning_of_cycle(packet: &[u8]) -> bool {
+    packet[2] & 0x01 == 1
 }
 
 fn write(filename: &str, xs: &[f64], ys: &[f64]) -> std::io::Result<()> {
@@ -257,10 +258,15 @@ fn write(filename: &str, xs: &[f64], ys: &[f64]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn polar_to_cartesian(angles: &[f64], distances: &[f64]) -> (Vec<f64>, Vec<f64>) {
-    assert_eq!(angles.len(), distances.len());
-    let xs = (0..angles.len()).map(|i| f64::cos(angles[i]) * distances[i]).collect::<Vec<_>>();
-    let ys = (0..angles.len()).map(|i| f64::sin(angles[i]) * distances[i]).collect::<Vec<_>>();
+fn polar_to_cartesian(
+        angle_iter: impl Iterator<Item = f64>,
+        distance_iter: impl Iterator<Item = f64>) -> (Vec<f64>, Vec<f64>) {
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    for (d, w) in distance_iter.zip(angle_iter) {
+        xs.push(d * f64::cos(w));
+        ys.push(d * f64::sin(w));
+    }
     (xs, ys)
 }
 
@@ -335,6 +341,29 @@ fn sendable_packet_range(buffer: &VecDeque<u8>) -> Result<(usize, usize), ()> {
     Ok((start_index, end_index))
 }
 
+pub struct Scan {
+    angles_radian: Vec<f64>,
+    distances: Vec<u16>,
+    flags: Vec<u8>,
+    intensities: Vec<u8>
+}
+
+impl Scan {
+    fn new() -> Scan {
+        Scan {
+            angles_radian: Vec::new(),
+            distances: Vec::new(),
+            flags: Vec::new(),
+            intensities: Vec::new()
+        }
+    }
+}
+
+pub struct Driver {
+    driver: String,
+    tx: Sender<Scan>
+}
+
 fn main() {
     let matches = Command::new("Serialport Example - Receive Data")
         .about("Reads data from a serial port and echoes it to stdout")
@@ -398,10 +427,13 @@ fn main() {
         port
     });
 
+    // let (scan_data_tx, scan_data_rx) = mpsc::sync_channel::<Vec<u8>>(200);
+
     let (parser_terminator_tx, parser_terminator_rx) = mpsc::channel::<bool>();
     let scan_parser = std::thread::spawn(move || {
         let mut is_scanning: bool = true;
         let mut buffer = VecDeque::<u8>::new();
+        let mut scan = Scan::new();
         while is_scanning {
             match scan_data_rx.try_recv() {
                 Ok(data) => {
@@ -431,11 +463,16 @@ fn main() {
             let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<_>>();
             println!("leading elements : {:4} bytes = {}", leading_elements.len(), to_string(&leading_elements));
             println!("packet           : {:4} bytes = {}", packet.len(), to_string(&packet));
-            check_scan_packet_header(&packet).unwrap();
-            if let Err(e) = check_packet_size(&packet) {
-                println!("Error: {e}");
-            }
             println!("\n");
+            calc_angles(&packet, &mut scan.angles_radian);
+            calc_distances(&packet, &mut scan.distances);
+            get_intensities(&packet, &mut scan.intensities);
+            get_flags(&packet, &mut scan.flags);
+            if is_beginning_of_cycle(&packet) {
+                // tx.send(scan);
+                scan = Scan::new();
+            }
+
             is_scanning = match parser_terminator_rx.try_recv() {
                 Ok(s) => s,
                 Err(_) => true,
