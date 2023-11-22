@@ -433,6 +433,27 @@ fn receive_scan(scan_data_rx: Receiver<Vec<u8>>, parser_terminator_rx: Receiver<
     }
 }
 
+fn launch_scan_thread(mut port: Box<dyn SerialPort>) -> Box<dyn SerialPort> {
+    let (reader_terminator_tx, reader_terminator_rx) = mpsc::channel::<bool>();
+    let (parser_terminator_tx, parser_terminator_rx) = mpsc::channel::<bool>();
+
+    let (scan_data_tx, scan_data_rx) = mpsc::sync_channel::<Vec<u8>>(200);
+    let scan_data_receiver = std::thread::spawn(move || -> Box<dyn SerialPort> {
+        read_signal(&mut port, scan_data_tx, reader_terminator_rx);
+        port
+    });
+
+    let scan_parser = std::thread::spawn(|| {
+        receive_scan(scan_data_rx, parser_terminator_rx);
+    });
+
+    sleep_ms(10000);
+    reader_terminator_tx.send(false).unwrap();
+    parser_terminator_tx.send(false).unwrap();
+    scan_parser.join().unwrap();
+    return scan_data_receiver.join().unwrap();
+}
+
 fn main() {
     let matches = Command::new("Serialport Example - Receive Data")
         .about("Reads data from a serial port and echoes it to stdout")
@@ -471,23 +492,8 @@ fn main() {
 
     start_scan(&mut port);
 
-    let (reader_terminator_tx, reader_terminator_rx) = mpsc::channel::<bool>();
-    let (scan_data_tx, scan_data_rx) = mpsc::sync_channel::<Vec<u8>>(200);
-    let scan_data_receiver = std::thread::spawn(move || -> Box<dyn SerialPort> {
-        read_signal(&mut port, scan_data_tx, reader_terminator_rx);
-        port
-    });
+    let mut port = launch_scan_thread(port);
 
-    let (parser_terminator_tx, parser_terminator_rx) = mpsc::channel::<bool>();
-    let scan_parser = std::thread::spawn(move || {
-        receive_scan(scan_data_rx, parser_terminator_rx);
-    });
-
-    sleep_ms(10000);
-    reader_terminator_tx.send(false).unwrap();
-    parser_terminator_tx.send(false).unwrap();
-    scan_parser.join().unwrap();
-    let mut port = scan_data_receiver.join().unwrap();
     stop_scan(&mut port);
     flush(&mut port);
 }
