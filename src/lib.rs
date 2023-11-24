@@ -10,9 +10,6 @@ mod ydlidar_models;
 use serialport::SerialPort;
 use crossbeam_channel::{Sender, Receiver, bounded};
 
-use ctrlc;
-use clap::{Arg, Command};
-
 const HEADER_SIZE : usize = 7;
 const LIDAR_CMD_GET_DEVICE_HEALTH : u8 = 0x92;
 const LIDAR_CMD_GET_DEVICE_INFO : u8 = 0x90;
@@ -72,10 +69,9 @@ fn flush(port: &mut Box<dyn SerialPort>) {
         port.read(packet.as_mut_slice()).unwrap();
     };
 
-    for _ in 0..10 {
-        f();
-        sleep_ms(10);
-    }
+    f();
+    sleep_ms(10);
+    f();
 }
 
 fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Result<Vec<u8>, io::Error> {
@@ -344,10 +340,10 @@ fn sendable_packet_range(buffer: &VecDeque<u8>) -> Result<(usize, usize), ()> {
 }
 
 pub struct Scan {
-    angles_radian: Vec<f64>,
-    distances: Vec<u16>,
-    flags: Vec<u8>,
-    intensities: Vec<u8>
+    pub angles_radian: Vec<f64>,
+    pub distances: Vec<u16>,
+    pub flags: Vec<u8>,
+    pub intensities: Vec<u8>
 }
 
 impl Scan {
@@ -434,14 +430,14 @@ fn parse_stream(
     }
 }
 
-struct DriverThreads {
+pub struct DriverThreads {
     reader_terminator_tx: Sender<bool>,
     parser_terminator_tx: Sender<bool>,
     reader_thread: Option<JoinHandle<()>>,
     receiver_thread: Option<JoinHandle<()>>,
 }
 
-fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
+pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
     let baud_rate = 230400;   // fixed baud rate for YDLiDAR T-mini Pro
     let maybe_port = serialport::new(port_name, baud_rate)
         .timeout(std::time::Duration::from_millis(10))
