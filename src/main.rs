@@ -1,16 +1,15 @@
 use std::io::{self, Write};
-use std::time::Duration;
-use std::{thread, time};
 use std::sync::mpsc;
 use std::collections::VecDeque;
-use std::sync::mpsc::{SyncSender, Sender, Receiver};
-
 use std::fs::File;
+use std::sync::Arc;
 
 mod device_info;
 mod ydlidar_models;
 
 use serialport::SerialPort;
+use crossbeam_channel::{Sender, Receiver, bounded};
+
 use ctrlc;
 use clap::{Arg, Command};
 
@@ -32,7 +31,7 @@ fn to_string(data: &[u8]) -> String {
 fn send_data(port: &mut Box<dyn SerialPort>, data: &[u8]) {
     match port.write(data) {
         Ok(_) => {
-            println!("Wrote {}", to_string(data));
+            // println!("Wrote {}", to_string(data));
             std::io::stdout().flush().unwrap();
         }
         Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
@@ -46,7 +45,7 @@ fn send_command(port: &mut Box<dyn SerialPort>, command: u8) {
 }
 
 fn sleep_ms(duration: u64) {
-    thread::sleep(time::Duration::from_millis(duration));
+    std::thread::sleep(std::time::Duration::from_millis(duration));
 }
 
 fn timeout_error(message: &str) -> io::Error {
@@ -95,7 +94,7 @@ fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Resu
 
         let mut packet: Vec<u8> = vec![0; data_size];
         match port.read(packet.as_mut_slice()) {
-            Ok(n) => println!("Read {} bytes", n),
+            Ok(n) => (), // println!("Read {} bytes", n),
             Err(e) => return Err(e),
         }
         return Ok(packet);
@@ -127,10 +126,8 @@ fn validate_response_header(header: &Vec<u8>, maybe_response_length: Option<u8>,
 fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     send_command(port, LIDAR_CMD_GET_DEVICE_HEALTH);
     let header = read(port, HEADER_SIZE, 10).unwrap();
-    println!("Received header = {}", to_string(&header));
     validate_response_header(&header, Some(3), LIDAR_ANS_TYPE_DEVHEALTH).unwrap();
     let health = read(port, 3, 10).unwrap();
-    println!("Response = {}", to_string(&health));
 
     if health[0] != 0 {  // Last two bit are reserved bits, which should be ignored.
         return Err(format!(
@@ -145,8 +142,8 @@ fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
     let header = read(port, HEADER_SIZE, 10).unwrap();
     validate_response_header(&header, Some(20), LIDAR_ANS_TYPE_DEVINFO).unwrap();
     let info = read(port, 20, 10).unwrap();
-    println!("Received header = {}", to_string(&header));
-    println!("Response = {}", to_string(&info));
+    // println!("Received header = {}", to_string(&header));
+    // println!("Response = {}", to_string(&info));
     return device_info::DeviceInfo {
         model_number: info[0],
         firmware_major_version: info[1],
@@ -359,12 +356,10 @@ impl Scan {
     }
 }
 
-pub struct Driver {
-    driver: String,
-    tx: Sender<Scan>
-}
-
-fn read_signal(port: &mut Box<dyn SerialPort>, scan_data_tx: SyncSender<Vec<u8>>, reader_terminator_rx: Receiver<bool>) {
+fn read_signal(
+    port: &mut Box<dyn SerialPort>,
+    scan_data_tx: mpsc::SyncSender<Vec<u8>>,
+    reader_terminator_rx: &Receiver<bool>) {
     let mut is_scanning: bool = true;
     while is_scanning {
         let n_read: usize = get_n_read(port);
@@ -374,7 +369,7 @@ fn read_signal(port: &mut Box<dyn SerialPort>, scan_data_tx: SyncSender<Vec<u8>>
         }
         let mut signal: Vec<u8> = vec![0; n_read];
         port.read(signal.as_mut_slice()).unwrap();
-        println!("Read {} bytes.", signal.len());
+        // println!("Read {} bytes.", signal.len());
         if let Err(e) = scan_data_tx.send(signal) {
             eprintln!("error: {e}");
         }
@@ -385,14 +380,16 @@ fn read_signal(port: &mut Box<dyn SerialPort>, scan_data_tx: SyncSender<Vec<u8>>
     }
 }
 
-fn receive_scan(scan_data_rx: Receiver<Vec<u8>>, parser_terminator_rx: Receiver<bool>) {
+fn receive_scan(
+        scan_data_rx: mpsc::Receiver<Vec<u8>>,
+        parser_terminator_rx: &Receiver<bool>) {
     let mut is_scanning: bool = true;
     let mut buffer = VecDeque::<u8>::new();
     let mut scan = Scan::new();
     while is_scanning {
         match scan_data_rx.try_recv() {
             Ok(data) => {
-                println!("received data    : {:4} bytes = {}", data.len(), to_string(&data));
+                // println!("received data    : {:4} bytes = {}", data.len(), to_string(&data));
                 buffer.extend(data);
             },
             Err(_) => {
@@ -414,9 +411,9 @@ fn receive_scan(scan_data_rx: Receiver<Vec<u8>>, parser_terminator_rx: Receiver<
             continue;
         }
         let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<_>>();
-        println!("leading elements : {:4} bytes = {}", leading_elements.len(), to_string(&leading_elements));
-        println!("packet           : {:4} bytes = {}", packet.len(), to_string(&packet));
-        println!("\n");
+        // println!("leading elements : {:4} bytes = {}", leading_elements.len(), to_string(&leading_elements));
+        // println!("packet           : {:4} bytes = {}", packet.len(), to_string(&packet));
+        // println!("\n");
         calc_angles(&packet, &mut scan.angles_radian);
         calc_distances(&packet, &mut scan.distances);
         get_intensities(&packet, &mut scan.intensities);
@@ -433,22 +430,77 @@ fn receive_scan(scan_data_rx: Receiver<Vec<u8>>, parser_terminator_rx: Receiver<
     }
 }
 
-fn launch_scan_thread(
-    mut port: Box<dyn SerialPort>,
+struct Driver {
+    port: Box<dyn SerialPort>,
+    reader_terminator_tx: Sender<bool>,
     reader_terminator_rx: Receiver<bool>,
-    parser_terminator_rx: Receiver<bool>) -> Box<dyn SerialPort> {
-    let (scan_data_tx, scan_data_rx) = mpsc::sync_channel::<Vec<u8>>(200);
-    let scan_data_receiver = std::thread::spawn(move || -> Box<dyn SerialPort> {
-        read_signal(&mut port, scan_data_tx, reader_terminator_rx);
-        port
-    });
+    parser_terminator_tx: Sender<bool>,
+    parser_terminator_rx: Receiver<bool>,
+}
 
-    let scan_parser = std::thread::spawn(|| {
-        receive_scan(scan_data_rx, parser_terminator_rx);
-    });
+impl Driver {
+    fn new(port_name: &str) -> Driver {
+        let baud_rate = 230400;   // fixed baud rate for YDLiDAR T-mini Pro
 
-    scan_parser.join().unwrap();
-    return scan_data_receiver.join().unwrap();
+        let maybe_port = serialport::new(port_name, baud_rate)
+            .timeout(std::time::Duration::from_millis(10))
+            .open();
+
+        let mut port = match maybe_port {
+            Ok(port) => port,
+            Err(e) => {
+                eprintln!("Failed to open \"{}\". Error: {}", port_name, e);
+                std::process::exit(1);
+            }
+        };
+
+        stop_scan(&mut port);
+        flush(&mut port);
+        check_device_health(&mut port).unwrap();
+        let device_info = get_device_info(&mut port);
+        if device_info.model_number != ydlidar_models::YdlidarModels::T_MINI_PRO {
+            eprintln!("This package can handle only YDLiDAR T-mini Pro.");
+            std::process::exit(1);
+        }
+
+        let (reader_terminator_tx, reader_terminator_rx) = bounded(10);
+        let (parser_terminator_tx, parser_terminator_rx) = bounded(10);
+
+        Driver {
+            port: port,
+            reader_terminator_tx : reader_terminator_tx,
+            reader_terminator_rx : reader_terminator_rx,
+            parser_terminator_tx : parser_terminator_tx,
+            parser_terminator_rx : parser_terminator_rx,
+        }
+    }
+
+    fn start(&mut self) {
+        start_scan(&mut self.port);
+        let (scan_data_tx, scan_data_rx) = mpsc::sync_channel::<Vec<u8>>(200);
+
+        let reader_terminator_tx = self.reader_terminator_tx.clone();
+        let parser_terminator_tx = self.parser_terminator_tx.clone();
+        ctrlc::set_handler(move || {
+            reader_terminator_tx.send(false).unwrap();
+            parser_terminator_tx.send(false).unwrap();
+            println!("Sent the terminate signal");
+        }).expect("Failed to set the ctrl-C handler");
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                read_signal(&mut self.port, scan_data_tx, &self.reader_terminator_rx);
+            });
+
+            scope.spawn(|| {
+                receive_scan(scan_data_rx, &self.parser_terminator_rx);
+            });
+        });
+
+        println!("Terminated threads");
+        stop_scan(&mut self.port);
+        flush(&mut self.port);
+    }
 }
 
 fn main() {
@@ -464,41 +516,8 @@ fn main() {
         .get_matches();
 
     let port_name = matches.value_of("port").unwrap();
-    let baud_rate = 230400;
 
-    let maybe_port = serialport::new(port_name, baud_rate)
-        .timeout(Duration::from_millis(10))
-        .open();
+    let mut driver = Driver::new(port_name);
 
-    let mut port = match maybe_port {
-        Ok(port) => port,
-        Err(e) => {
-            eprintln!("Failed to open \"{}\". Error: {}", port_name, e);
-            ::std::process::exit(1);
-        }
-    };
-
-    stop_scan(&mut port);
-    flush(&mut port);
-    check_device_health(&mut port).unwrap();
-    let device_info = get_device_info(&mut port);
-    if device_info.model_number != ydlidar_models::YdlidarModels::T_MINI_PRO {
-        println!("This package can handle only YDLiDAR T-mini Pro.");
-        std::process::exit(1);
-    }
-
-    start_scan(&mut port);
-
-    let (reader_terminator_tx, reader_terminator_rx) = mpsc::channel::<bool>();
-    let (parser_terminator_tx, parser_terminator_rx) = mpsc::channel::<bool>();
-
-    ctrlc::set_handler(move || {
-        reader_terminator_tx.send(false).unwrap();
-        parser_terminator_tx.send(false).unwrap();
-    }).expect("Error setting Ctrl-C handler");
-
-    let mut port = launch_scan_thread(port, reader_terminator_rx, parser_terminator_rx);
-
-    stop_scan(&mut port);
-    flush(&mut port);
+    driver.start();
 }

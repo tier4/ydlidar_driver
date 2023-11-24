@@ -9,3 +9,5 @@ edition = "2021"
 clap = { version = "3.1.6", features = ["derive"] }
 serialport = "4.2.2"
 ctrlc = "3.4.0"
+crossbeam-channel = "0.5.8"
+crossbeam-utils = "0.8.16"
