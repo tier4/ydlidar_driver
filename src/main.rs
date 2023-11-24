@@ -388,7 +388,8 @@ fn read_signal(
 
 fn receive_scan(
         scan_data_rx: mpsc::Receiver<Vec<u8>>,
-        parser_terminator_rx: Receiver<bool>) {
+        parser_terminator_rx: Receiver<bool>,
+        scan_tx: mpsc::SyncSender<Scan>) {
     let mut is_scanning: bool = true;
     let mut buffer = VecDeque::<u8>::new();
     let mut scan = Scan::new();
@@ -417,15 +418,12 @@ fn receive_scan(
             continue;
         }
         let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<_>>();
-        // println!("leading elements : {:4} bytes = {}", leading_elements.len(), to_string(&leading_elements));
-        // println!("packet           : {:4} bytes = {}", packet.len(), to_string(&packet));
-        // println!("\n");
         calc_angles(&packet, &mut scan.angles_radian);
         calc_distances(&packet, &mut scan.distances);
         get_intensities(&packet, &mut scan.intensities);
         get_flags(&packet, &mut scan.flags);
         if is_beginning_of_cycle(&packet) {
-            // tx.send(scan);
+            scan_tx.send(scan).unwrap();
             scan = Scan::new();
         }
 
@@ -436,9 +434,20 @@ fn receive_scan(
     }
 }
 
-type DriverThreads = (JoinHandle<()>, JoinHandle<()>, Sender<bool>, Sender<bool>);
+struct DriverThreads {
+    reader_terminator_tx: Sender<bool>,
+    parser_terminator_tx: Sender<bool>,
+    reader_thread: Option<JoinHandle<()>>,
+    receiver_thread: Option<JoinHandle<()>>,
+}
 
-fn run_driver(port_name: &str) -> DriverThreads {
+impl Drop for DriverThreads {
+    fn drop(&mut self) {
+        join(self);
+    }
+}
+
+fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
     let baud_rate = 230400;   // fixed baud rate for YDLiDAR T-mini Pro
     let maybe_port = serialport::new(port_name, baud_rate)
         .timeout(std::time::Duration::from_millis(10))
@@ -466,23 +475,37 @@ fn run_driver(port_name: &str) -> DriverThreads {
 
     start_scan(&mut port);
 
-    let reader = std::thread::spawn(move || {
+    let reader_thread = Some(std::thread::spawn(move || {
         read_signal(&mut port, scan_data_tx, reader_terminator_rx);
-    });
+    }));
 
-    let receiver = std::thread::spawn(move || {
-        receive_scan(scan_data_rx, parser_terminator_rx);
-    });
+    let (scan_tx, scan_rx) = mpsc::sync_channel::<Scan>(10);
+    let receiver_thread = Some(std::thread::spawn(move || {
+        receive_scan(scan_data_rx, parser_terminator_rx, scan_tx);
+    }));
 
-    (reader, receiver, reader_terminator_tx, parser_terminator_tx)
+    let driver_threads = DriverThreads {
+        reader_thread: reader_thread,
+        receiver_thread: receiver_thread,
+        reader_terminator_tx: reader_terminator_tx,
+        parser_terminator_tx: parser_terminator_tx
+    };
+
+    (driver_threads, scan_rx)
 }
 
-fn join(driver_threads: DriverThreads) {
-    let (reader, receiver, reader_terminator_tx, parser_terminator_tx) = driver_threads;
-    reader_terminator_tx.send(false).unwrap();
-    parser_terminator_tx.send(false).unwrap();
-    reader.join().unwrap();
-    receiver.join().unwrap();
+fn join(driver_threads: &mut DriverThreads) {
+    driver_threads.reader_terminator_tx.send(false).unwrap();
+    driver_threads.parser_terminator_tx.send(false).unwrap();
+
+    if !driver_threads.reader_thread.is_none() {
+        let thread = driver_threads.reader_thread.take().unwrap();
+        thread.join().unwrap();
+    }
+    if !driver_threads.receiver_thread.is_none() {
+        let thread = driver_threads.receiver_thread.take().unwrap();
+        thread.join().unwrap();
+    }
 }
 
 fn main() {
@@ -499,9 +522,14 @@ fn main() {
 
     let port_name = matches.value_of("port").unwrap();
 
-    let driver_threads: DriverThreads = run_driver(port_name);
-    println!("Do some other tasks here");
-    sleep_ms(10000);
+    let (mut driver_threads, scan_rx) = run_driver(port_name);
 
-    join(driver_threads);
+    for i in 0..200 {
+        match scan_rx.try_recv() {
+            Ok(scan) => println!("Received {} scan samples.", scan.angles_radian.len()),
+            Err(_) => sleep_ms(10),
+        }
+    }
+
+    drop(driver_threads);
 }
