@@ -361,7 +361,7 @@ impl Scan {
     }
 }
 
-fn read_signal(
+fn read_device_signal(
     port: &mut Box<dyn SerialPort>,
     scan_data_tx: mpsc::SyncSender<Vec<u8>>,
     reader_terminator_rx: Receiver<bool>) {
@@ -386,7 +386,7 @@ fn read_signal(
     stop_scan_and_flush(port);
 }
 
-fn receive_scan(
+fn parse_stream(
         scan_data_rx: mpsc::Receiver<Vec<u8>>,
         parser_terminator_rx: Receiver<bool>,
         scan_tx: mpsc::SyncSender<Scan>) {
@@ -441,12 +441,6 @@ struct DriverThreads {
     receiver_thread: Option<JoinHandle<()>>,
 }
 
-impl Drop for DriverThreads {
-    fn drop(&mut self) {
-        join(self);
-    }
-}
-
 fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
     let baud_rate = 230400;   // fixed baud rate for YDLiDAR T-mini Pro
     let maybe_port = serialport::new(port_name, baud_rate)
@@ -476,12 +470,12 @@ fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
     start_scan(&mut port);
 
     let reader_thread = Some(std::thread::spawn(move || {
-        read_signal(&mut port, scan_data_tx, reader_terminator_rx);
+        read_device_signal(&mut port, scan_data_tx, reader_terminator_rx);
     }));
 
     let (scan_tx, scan_rx) = mpsc::sync_channel::<Scan>(10);
     let receiver_thread = Some(std::thread::spawn(move || {
-        receive_scan(scan_data_rx, parser_terminator_rx, scan_tx);
+        parse_stream(scan_data_rx, parser_terminator_rx, scan_tx);
     }));
 
     let driver_threads = DriverThreads {
@@ -508,28 +502,8 @@ fn join(driver_threads: &mut DriverThreads) {
     }
 }
 
-fn main() {
-    let matches = Command::new("Serialport Example - Receive Data")
-        .about("Reads data from a serial port and echoes it to stdout")
-        .disable_version_flag(true)
-        .arg(
-            Arg::new("port")
-                .help("The device path to a serial port")
-                .use_value_delimiter(false)
-                .required(true),
-        )
-        .get_matches();
-
-    let port_name = matches.value_of("port").unwrap();
-
-    let (mut driver_threads, scan_rx) = run_driver(port_name);
-
-    for i in 0..200 {
-        match scan_rx.try_recv() {
-            Ok(scan) => println!("Received {} scan samples.", scan.angles_radian.len()),
-            Err(_) => sleep_ms(10),
-        }
+impl Drop for DriverThreads {
+    fn drop(&mut self) {
+        join(self);
     }
-
-    drop(driver_threads);
 }
