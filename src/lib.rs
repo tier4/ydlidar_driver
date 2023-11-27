@@ -1,9 +1,9 @@
 use std::io::{self, Write};
 use std::sync::mpsc;
 use std::collections::VecDeque;
-use std::fs::File;
 use std::thread::JoinHandle;
 
+mod debug;
 mod device_info;
 mod ydlidar_models;
 
@@ -21,18 +21,9 @@ const LIDAR_ANS_TYPE_DEVINFO : u8 = 0x4;
 const LIDAR_ANS_TYPE_DEVHEALTH : u8 = 0x6;
 const LIDAR_ANS_TYPE_MEASUREMENT : u8 = 0x81;
 
-fn to_string(data: &[u8]) -> String {
-    return data.iter().map(|e| format!("{:02X}", e)).collect::<Vec<_>>().join(" ");
-}
-
 fn send_data(port: &mut Box<dyn SerialPort>, data: &[u8]) {
-    match port.write(data) {
-        Ok(_) => {
-            // println!("Wrote {}", to_string(data));
-            std::io::stdout().flush().unwrap();
-        }
-        Err(ref e) if e.kind() == io::ErrorKind::TimedOut => (),
-        Err(e) => eprintln!("{:?}", e),
+    if let Err(e) = port.write(data) {
+        eprintln!("{:?}", e);
     }
 }
 
@@ -89,9 +80,8 @@ fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Resu
         }
 
         let mut packet: Vec<u8> = vec![0; data_size];
-        match port.read(packet.as_mut_slice()) {
-            Ok(n) => (), // println!("Read {} bytes", n),
-            Err(e) => return Err(e),
+        if let Err(e) = port.read(packet.as_mut_slice()) {
+            return Err(e);
         }
         return Ok(packet);
     }
@@ -100,21 +90,21 @@ fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Resu
 
 fn validate_response_header(header: &Vec<u8>, maybe_response_length: Option<u8>, type_code: u8) -> Result<(), String> {
     if header.len() != HEADER_SIZE {
-        return Err(format!("Response header must be always seven bytes. Observed = {} bytes.", header.len()));
+        return Err(format!("Response header must be always seven bytes. Actually {} bytes.", header.len()));
     }
     if header[0] != 0xA5 || header[1] != 0x5A {
-        return Err(format!("Header sign must with 0xA55A. Observed = {}", to_string(&header[0..2])));
+        return Err(format!("Header sign must start with 0xA55A. Observed = {}.", debug::to_string(&header[0..2])));
     }
     match maybe_response_length {
         None => (),
         Some(len) => {
             if header[2] != len {
-                return Err(format!("Expected response length of {} bytes. Observed = {}", len, header[2]));
+                return Err(format!("Expected response length of {} bytes but found {} bytes.", len, header[2]));
             }
         }
     }
     if header[6] != type_code {
-        return Err(format!("Expected type code {}. Observed = {}", type_code, header[2]));
+        return Err(format!("Expected type code {} but obtained {}.", type_code, header[6]));
     }
     return Ok(());
 }
@@ -245,62 +235,6 @@ fn is_beginning_of_cycle(packet: &[u8]) -> bool {
     packet[2] & 0x01 == 1
 }
 
-fn write(filename: &str, xs: &[f64], ys: &[f64]) -> std::io::Result<()> {
-    assert_eq!(xs.len(), ys.len());
-
-    let mut file = File::create(filename)?;
-    for i in 0..xs.len() {
-        let s = format!("{} {}\n", xs[i], ys[i]);
-        file.write_all(s.as_bytes())?;
-    }
-    Ok(())
-}
-
-fn polar_to_cartesian(
-        angle_iter: impl Iterator<Item = f64>,
-        distance_iter: impl Iterator<Item = f64>) -> (Vec<f64>, Vec<f64>) {
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    for (d, w) in distance_iter.zip(angle_iter) {
-        xs.push(d * f64::cos(w));
-        ys.push(d * f64::sin(w));
-    }
-    (xs, ys)
-}
-
-fn split(packet: &[u8]) -> Vec<usize> {
-    let mut indices = Vec::new();
-    if packet.len() == 0 {
-        return indices;
-    }
-    for i in 0..(packet.len()-1) {
-        if packet[i+0] == 0xAA && packet[i+1] == 0x55 {
-            indices.push(i);
-        }
-    }
-    return indices;
-}
-
-#[cfg(test)]
-mod tests {
-    // Note this useful idiom: importing names from outer (for mod tests) scope.
-    use super::*;
-
-    fn test_sendable_packet_range() {
-    }
-
-    #[test]
-    fn test_split() {
-        let xs = split(
-        //      0     1     2     3     4     5     6     7     8     9
-           &[0xAA, 0x55, 0x00, 0x28, 0xF5, 0x82, 0xCF, 0x94, 0xD8, 0x6F,
-             0xAA, 0x55, 0x82, 0x28, 0x41, 0x95, 0xE3, 0xA6, 0x6A, 0x4F,
-             0xAA, 0x55, 0x00, 0x28, 0x55, 0xA7, 0xD9, 0x04, 0xB8, 0xDC]);
-        assert_eq!(xs.len(), 3);
-        assert_eq!(xs, vec![0, 10, 20]);
-    }
-}
-
 fn find_start_index(buffer: &VecDeque<u8>) -> Result<usize, ()> {
     if buffer.len() == 0 {
         return Err(());
@@ -408,7 +342,7 @@ fn parse_stream(
             Ok(t) => t,
             Err(_) => continue,
         };
-        let leading_elements = buffer.drain(..start_index).collect::<Vec<_>>();
+        buffer.drain(..start_index);   // remove leading bytes
         if buffer.len() < n_packet_bytes {
             // insufficient buffer size to extract a packet
             continue;
@@ -501,5 +435,37 @@ fn join(driver_threads: &mut DriverThreads) {
 impl Drop for DriverThreads {
     fn drop(&mut self) {
         join(self);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_response_header() {
+        assert_eq!(
+            validate_response_header(
+                &vec![0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04], Some(0x14), 0x04),
+            Ok(()));
+
+        assert_eq!(
+            validate_response_header(
+                &vec![0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04, 0x09], Some(0x14), 0x04),
+            Err("Response header must be always seven bytes. Actually 8 bytes.".to_string()));
+        assert_eq!(
+            validate_response_header(
+                &vec![0xA6, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04], Some(0x14), 0x04),
+            Err("Header sign must start with 0xA55A. Observed = A6 5A.".to_string()));
+
+        assert_eq!(
+            validate_response_header(
+                &vec![0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04], Some(0x12), 0x04),
+            Err("Expected response length of 18 bytes but found 20 bytes.".to_string()));
+
+        assert_eq!(
+            validate_response_header(
+                &vec![0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x08], Some(0x14), 0x04),
+            Err("Expected type code 4 but obtained 8.".to_string()));
     }
 }
