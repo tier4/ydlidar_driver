@@ -8,7 +8,7 @@ mod debug;
 mod device_info;
 mod ydlidar_models;
 
-use serialport::{SerialPort, TTYPort};
+use serialport::SerialPort;
 use crossbeam_channel::{Sender, Receiver, bounded};
 
 const HEADER_SIZE : usize = 7;
@@ -113,12 +113,14 @@ fn validate_response_header(header: &Vec<u8>, maybe_response_length: Option<u8>,
 fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     send_command(port, LIDAR_CMD_GET_DEVICE_HEALTH);
     let header = read(port, HEADER_SIZE, 10).unwrap();
+    println!("header = {}", debug::to_string(&header));
     validate_response_header(&header, Some(3), LIDAR_ANS_TYPE_DEVHEALTH).unwrap();
     let health = read(port, 3, 10).unwrap();
+    println!("health = {}", debug::to_string(&health));
 
     if health[0] != 0 {  // Last two bit are reserved bits, which should be ignored.
         return Err(format!(
-                "Device health error. Error code = {:08b}. \
+                "Device health error. Error code = {:#010b}. \
                  See the development manual for details.", health[0]));
     }
     return Ok(());
@@ -442,6 +444,7 @@ impl Drop for DriverThreads {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serialport::TTYPort;
 
     #[test]
     fn test_validate_response_header() {
@@ -484,5 +487,19 @@ mod tests {
         let mut buf = [0u8; 2];
         slave.read(&mut buf).unwrap();
         assert_eq!(buf, [0xA5, 0x68]);
+    }
+
+    #[test]
+    fn test_check_device_health() {
+        let (mut master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
+        let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
+        master.write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00]).unwrap();
+        assert_eq!(check_device_health(&mut slave_ptr), Ok(()));
+
+        master.write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x02, 0x00, 0x00]).unwrap();
+        assert_eq!(
+            check_device_health(&mut slave_ptr),
+            Err("Device health error. Error code = 0b00000010. \
+                 See the development manual for details.".to_string()));
     }
 }
