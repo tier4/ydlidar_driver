@@ -1,4 +1,5 @@
-use std::io::{self, Write};
+use std::io::{Read, Write};
+use std::io;
 use std::sync::mpsc;
 use std::collections::VecDeque;
 use std::thread::JoinHandle;
@@ -7,7 +8,7 @@ mod debug;
 mod device_info;
 mod ydlidar_models;
 
-use serialport::SerialPort;
+use serialport::{SerialPort, TTYPort};
 use crossbeam_channel::{Sender, Receiver, bounded};
 
 const HEADER_SIZE : usize = 7;
@@ -29,7 +30,7 @@ fn send_data(port: &mut Box<dyn SerialPort>, data: &[u8]) {
 
 fn send_command(port: &mut Box<dyn SerialPort>, command: u8) {
     let data : [u8; 2] = [LIDAR_CMD_SYNC_BYTE, command];
-    send_data(port, &data);  // We need to do a lot more
+    send_data(port, &data);
 }
 
 fn sleep_ms(duration: u64) {
@@ -453,10 +454,16 @@ mod tests {
             validate_response_header(
                 &vec![0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04, 0x09], Some(0x14), 0x04),
             Err("Response header must be always seven bytes. Actually 8 bytes.".to_string()));
+
         assert_eq!(
             validate_response_header(
                 &vec![0xA6, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04], Some(0x14), 0x04),
             Err("Header sign must start with 0xA55A. Observed = A6 5A.".to_string()));
+
+        assert_eq!(
+            validate_response_header(
+                &vec![0xA5, 0x2A, 0x14, 0x00, 0x00, 0x00, 0x04], Some(0x14), 0x04),
+            Err("Header sign must start with 0xA55A. Observed = A5 2A.".to_string()));
 
         assert_eq!(
             validate_response_header(
@@ -467,5 +474,15 @@ mod tests {
             validate_response_header(
                 &vec![0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x08], Some(0x14), 0x04),
             Err("Expected type code 4 but obtained 8.".to_string()));
+    }
+
+    #[test]
+    fn test_send_command() {
+        let (master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
+        let mut master_ptr = Box::new(master) as Box<dyn SerialPort>;
+        send_command(&mut master_ptr, 0x68);
+        let mut buf = [0u8; 2];
+        slave.read(&mut buf).unwrap();
+        assert_eq!(buf, [0xA5, 0x68]);
     }
 }
