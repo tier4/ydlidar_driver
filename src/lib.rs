@@ -140,7 +140,6 @@ fn start_scan(port: &mut Box<dyn SerialPort>) {
 
 fn stop_scan(port: &mut Box<dyn SerialPort>) {
     send_command(port, LIDAR_CMD_FORCE_STOP);
-    sleep_ms(10);
     send_command(port, LIDAR_CMD_STOP);
 }
 
@@ -472,6 +471,8 @@ mod tests {
         let (master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
         let mut master_ptr = Box::new(master) as Box<dyn SerialPort>;
         send_command(&mut master_ptr, 0x68);
+
+        sleep_ms(10);
         let mut buf = [0u8; 2];
         slave.read(&mut buf).unwrap();
         assert_eq!(buf, [0xA5, 0x68]);
@@ -481,10 +482,13 @@ mod tests {
     fn test_check_device_health() {
         let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
         let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
+
         master.write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00]).unwrap();
+        sleep_ms(10);
         assert_eq!(check_device_health(&mut slave_ptr), Ok(()));
 
         master.write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x02, 0x00, 0x00]).unwrap();
+        sleep_ms(10);
         assert_eq!(
             check_device_health(&mut slave_ptr),
             Err("Device health error. Error code = 0b00000010. \
@@ -497,6 +501,7 @@ mod tests {
         master.write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00]).unwrap();
 
         let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
+
         sleep_ms(10);
 
         assert_eq!(slave_ptr.bytes_to_read().unwrap(), 10);
@@ -516,6 +521,9 @@ mod tests {
               0x96, 0x00, 0x01, 0x02, 0x02, 0x00, 0x02,
               0x02, 0x01, 0x01, 0x00, 0x03, 0x00, 0x01,
               0x01, 0x01, 0x01, 0x01, 0x01, 0x01]).unwrap();
+
+        sleep_ms(10);
+
         let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
         let info = get_device_info(&mut slave_ptr);
         assert_eq!(info.model_number, 150);
@@ -529,10 +537,27 @@ mod tests {
     fn test_start_scan() {
         let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
         master.write(&[0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81]).unwrap();
+
         let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
         start_scan(&mut slave_ptr);
+
+        sleep_ms(10);
+
         let mut buf = [0u8; 2];
         master.read(&mut buf).unwrap();
         assert_eq!(buf, [0xA5, 0x60]);
+    }
+
+    #[test]
+    fn test_stop_scan() {
+        let (master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
+        let mut master_ptr = Box::new(master) as Box<dyn SerialPort>;
+        stop_scan(&mut master_ptr);
+
+        sleep_ms(10);
+
+        let mut buf = [0u8; 4];
+        slave.read(&mut buf).unwrap();
+        assert_eq!(buf, [0xA5, 0x00, 0xA5, 0x65]);
     }
 }
