@@ -52,18 +52,12 @@ fn get_n_read(port: &mut Box<dyn SerialPort>) -> usize {
 }
 
 fn flush(port: &mut Box<dyn SerialPort>) {
-    let mut f = || -> () {
-        let n_read: usize = get_n_read(port);
-        if n_read == 0 {
-            return;
-        }
-        let mut packet: Vec<u8> = vec![0; n_read];
-        port.read(packet.as_mut_slice()).unwrap();
-    };
-
-    f();
-    sleep_ms(10);
-    f();
+    let n_read: usize = get_n_read(port);
+    if n_read == 0 {
+        return;
+    }
+    let mut packet: Vec<u8> = vec![0; n_read];
+    port.read(packet.as_mut_slice()).unwrap();
 }
 
 fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Result<Vec<u8>, io::Error> {
@@ -113,10 +107,8 @@ fn validate_response_header(header: &Vec<u8>, maybe_response_length: Option<u8>,
 fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     send_command(port, LIDAR_CMD_GET_DEVICE_HEALTH);
     let header = read(port, HEADER_SIZE, 10).unwrap();
-    println!("header = {}", debug::to_string(&header));
     validate_response_header(&header, Some(3), LIDAR_ANS_TYPE_DEVHEALTH).unwrap();
     let health = read(port, 3, 10).unwrap();
-    println!("health = {}", debug::to_string(&health));
 
     if health[0] != 0 {  // Last two bit are reserved bits, which should be ignored.
         return Err(format!(
@@ -131,8 +123,6 @@ fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
     let header = read(port, HEADER_SIZE, 10).unwrap();
     validate_response_header(&header, Some(20), LIDAR_ANS_TYPE_DEVINFO).unwrap();
     let info = read(port, 20, 10).unwrap();
-    // println!("Received header = {}", to_string(&header));
-    // println!("Response = {}", to_string(&info));
     return device_info::DeviceInfo {
         model_number: info[0],
         firmware_major_version: info[1],
@@ -307,7 +297,6 @@ fn read_device_signal(
         }
         let mut signal: Vec<u8> = vec![0; n_read];
         port.read(signal.as_mut_slice()).unwrap();
-        // println!("Read {} bytes.", signal.len());
         if let Err(e) = scan_data_tx.send(signal) {
             eprintln!("error: {e}");
         }
@@ -329,7 +318,6 @@ fn parse_stream(
     while is_scanning {
         match scan_data_rx.try_recv() {
             Ok(data) => {
-                // println!("received data    : {:4} bytes = {}", data.len(), to_string(&data));
                 buffer.extend(data);
             },
             Err(_) => {
@@ -501,5 +489,22 @@ mod tests {
             check_device_health(&mut slave_ptr),
             Err("Device health error. Error code = 0b00000010. \
                  See the development manual for details.".to_string()));
+    }
+
+    #[test]
+    fn test_flush() {
+        let (mut master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
+        master.write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00]).unwrap();
+
+        let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
+        sleep_ms(10);
+
+        assert_eq!(slave_ptr.bytes_to_read().unwrap(), 10);
+        flush(&mut slave_ptr);
+        assert_eq!(slave_ptr.bytes_to_read().unwrap(), 0);
+
+        // when zero bytes to read
+        flush(&mut slave_ptr);
+        assert_eq!(slave_ptr.bytes_to_read().unwrap(), 0);
     }
 }
