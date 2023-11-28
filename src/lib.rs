@@ -479,7 +479,7 @@ mod tests {
 
     #[test]
     fn test_check_device_health() {
-        let (mut master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
+        let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
         let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
         master.write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00]).unwrap();
         assert_eq!(check_device_health(&mut slave_ptr), Ok(()));
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_flush() {
-        let (mut master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
+        let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
         master.write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00]).unwrap();
 
         let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn test_get_device_info() {
-        let (mut master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
+        let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
         master.write(
             &[0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04,
               0x96, 0x00, 0x01, 0x02, 0x02, 0x00, 0x02,
@@ -523,5 +523,16 @@ mod tests {
         assert_eq!(info.firmware_minor_version, 0);
         assert_eq!(info.hardware_version, 2);
         assert_eq!(info.serial_number, [2, 0, 2, 2, 1, 1, 0, 3, 0, 1, 1, 1, 1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn test_start_scan() {
+        let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
+        master.write(&[0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81]).unwrap();
+        let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
+        start_scan(&mut slave_ptr);
+        let mut buf = [0u8; 2];
+        master.read(&mut buf).unwrap();
+        assert_eq!(buf, [0xA5, 0x60]);
     }
 }
