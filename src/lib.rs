@@ -149,7 +149,6 @@ fn stop_scan_and_flush(port: &mut Box<dyn SerialPort>) {
 }
 
 fn to_angle(bit1: u8, bit2: u8) -> f64 {
-    assert_eq!((bit2 as u16) * 0x100, (bit2 as u16) << 8);
     let a = ((bit1 as u16) + ((bit2 as u16) << 8)) >> 1;
     return (a as f64) / 64.;
 }
@@ -158,7 +157,11 @@ fn n_scan_samples(packet : &[u8]) -> usize {
     packet[3] as usize
 }
 
-fn calc_angles(packet : &[u8], angles: &mut Vec<f64>) {
+fn degree_to_radian(degree: f64) -> f64 {
+    degree * std::f64::consts::PI / 180.
+}
+
+fn calc_angles(packet : &[u8], angles_radian: &mut Vec<f64>) {
     let start_angle = to_angle(packet[4], packet[5]);
     let end_angle = to_angle(packet[6], packet[7]);
 
@@ -170,9 +173,9 @@ fn calc_angles(packet : &[u8], angles: &mut Vec<f64>) {
     };
 
     for i in 0..n {
-        let angle_degree = ((i as f64) * angle_rate + start_angle) % 360.;
-        let angle_radian = angle_degree * std::f64::consts::PI / 180.;
-        angles.push(angle_radian);
+        let angle_degree = (start_angle + (i as f64) * angle_rate) % 360.;
+        let angle_radian = degree_to_radian(angle_degree);
+        angles_radian.push(angle_radian);
     }
 }
 
@@ -559,5 +562,45 @@ mod tests {
         let mut buf = [0u8; 4];
         slave.read(&mut buf).unwrap();
         assert_eq!(buf, [0xA5, 0x00, 0xA5, 0x65]);
+    }
+
+    #[test]
+    fn test_calc_angles() {
+        let epsilon = f64::EPSILON;
+        let pi = std::f64::consts::PI;
+
+        let mut angles = Vec::new();
+        calc_angles(&[0xAA, 0x55, 0x00, 0x28, 0x83, 0xA6, 0x07, 0x04], &mut angles);
+
+        assert_eq!(angles.len(), 40);
+        let angle_degree0 = to_angle(0x83, 0xA6);
+        let angle_degree1 = to_angle(0x07, 0x04);
+        let angle_radian0 = degree_to_radian(angle_degree0);
+        let angle_radian1 = degree_to_radian(angle_degree1);
+
+        assert!(angle_radian1 < angle_radian0);
+
+        let diff = angle_radian1 - angle_radian0 + 2. * pi;
+        for i in 0..40 {
+            let a = angle_radian0 + diff * (i as f64) / (40. - 1.);
+            let b = a % (2. * pi);
+            assert!(f64::abs(angles[i] - b) < 8. * epsilon);
+        }
+
+        calc_angles(&[0xAA, 0x55, 0x56, 0x28, 0x79, 0x04, 0xD1, 0x15], &mut angles);
+
+        assert_eq!(angles.len(), 80);
+        let angle_degree0 = to_angle(0x79, 0x04);
+        let angle_degree1 = to_angle(0xD1, 0x15);
+        let angle_radian0 = degree_to_radian(angle_degree0);
+        let angle_radian1 = degree_to_radian(angle_degree1);
+
+        let diff = angle_radian1 - angle_radian0;
+        for i in 0..40 {
+            let a = angle_radian0 + diff * (i as f64) / (40. - 1.);
+            let b = a % (2. * pi);
+            assert!(f64::abs(angles[i + 40] - b) < 8. * epsilon);
+        }
+
     }
 }
