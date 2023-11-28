@@ -125,8 +125,8 @@ fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
     let info = read(port, 20, 10).unwrap();
     return device_info::DeviceInfo {
         model_number: info[0],
-        firmware_major_version: info[1],
-        firmware_minor_version: info[2],
+        firmware_major_version: info[2],
+        firmware_minor_version: info[1],
         hardware_version: info[3],
         serial_number: info[4..20].try_into().unwrap(),
     };
@@ -506,5 +506,22 @@ mod tests {
         // when zero bytes to read
         flush(&mut slave_ptr);
         assert_eq!(slave_ptr.bytes_to_read().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_get_device_info() {
+        let (mut master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
+        master.write(
+            &[0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04,
+              0x96, 0x00, 0x01, 0x02, 0x02, 0x00, 0x02,
+              0x02, 0x01, 0x01, 0x00, 0x03, 0x00, 0x01,
+              0x01, 0x01, 0x01, 0x01, 0x01, 0x01]).unwrap();
+        let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
+        let info = get_device_info(&mut slave_ptr);
+        assert_eq!(info.model_number, 150);
+        assert_eq!(info.firmware_major_version, 1);
+        assert_eq!(info.firmware_minor_version, 0);
+        assert_eq!(info.hardware_version, 2);
+        assert_eq!(info.serial_number, [2, 0, 2, 2, 1, 1, 0, 3, 0, 1, 1, 1, 1, 1, 1, 1]);
     }
 }
