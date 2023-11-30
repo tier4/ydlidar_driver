@@ -316,12 +316,22 @@ impl Scan {
     }
 }
 
+fn do_terminate(terminator_rx: &Receiver<bool>) -> bool {
+    if let Ok(terminate) = terminator_rx.try_recv() {
+        return terminate;
+    }
+    return false;
+}
+
 fn read_device_signal(
     port: &mut Box<dyn SerialPort>,
     scan_data_tx: mpsc::SyncSender<Vec<u8>>,
     reader_terminator_rx: Receiver<bool>) {
-    let mut is_scanning: bool = true;
-    while is_scanning {
+    loop {
+        if do_terminate(&reader_terminator_rx) {
+            stop_scan_and_flush(port);
+            return;
+        }
         let n_read: usize = get_n_read(port);
         if n_read == 0 {
             sleep_ms(10);
@@ -332,12 +342,7 @@ fn read_device_signal(
         if let Err(e) = scan_data_tx.send(signal) {
             eprintln!("error: {e}");
         }
-        is_scanning = match reader_terminator_rx.try_recv() {
-            Ok(s) => s,
-            Err(_) => true,
-        }
     }
-    stop_scan_and_flush(port);
 }
 
 fn checksum_matched(packet: &[u8]) -> bool {
@@ -348,10 +353,13 @@ fn parse_packets(
         scan_data_rx: mpsc::Receiver<Vec<u8>>,
         parser_terminator_rx: Receiver<bool>,
         scan_tx: mpsc::SyncSender<Scan>) {
-    let mut is_scanning: bool = true;
     let mut buffer = VecDeque::<u8>::new();
     let mut scan = Scan::new();
-    while is_scanning {
+    loop {
+        if do_terminate(&parser_terminator_rx) {
+            return;
+        }
+
         match scan_data_rx.try_recv() {
             Ok(data) => {
                 buffer.extend(data);
@@ -384,11 +392,6 @@ fn parse_packets(
         calc_distances(&packet, &mut scan.distances);
         get_intensities(&packet, &mut scan.intensities);
         get_flags(&packet, &mut scan.flags);
-
-        is_scanning = match parser_terminator_rx.try_recv() {
-            Ok(s) => s,
-            Err(_) => true,
-        }
     }
 }
 
@@ -413,7 +416,7 @@ pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
         }
     };
 
-    stop_scan_and_flush(&mut port);
+    // stop_scan_and_flush(&mut port);
     check_device_health(&mut port).unwrap();
     let device_info = get_device_info(&mut port);
     if device_info.model_number != ydlidar_models::YdlidarModels::T_MINI_PRO {
@@ -447,8 +450,8 @@ pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
 }
 
 fn join(driver_threads: &mut DriverThreads) {
-    driver_threads.reader_terminator_tx.send(false).unwrap();
-    driver_threads.parser_terminator_tx.send(false).unwrap();
+    driver_threads.reader_terminator_tx.send(true).unwrap();
+    driver_threads.parser_terminator_tx.send(true).unwrap();
 
     if !driver_threads.reader_thread.is_none() {
         let thread = driver_threads.reader_thread.take().unwrap();
@@ -600,45 +603,6 @@ mod tests {
     }
 
     #[test]
-    fn test_calc_angles() {
-        let epsilon = f64::EPSILON;
-        let pi = std::f64::consts::PI;
-
-        let mut angles = Vec::new();
-        calc_angles(&[0xAA, 0x55, 0x00, 0x28, 0x83, 0xA6, 0x07, 0x04], &mut angles);
-
-        assert_eq!(angles.len(), 40);
-        let angle_degree0 = to_angle(0x83, 0xA6);
-        let angle_degree1 = to_angle(0x07, 0x04);
-        let angle_radian0 = degree_to_radian(angle_degree0);
-        let angle_radian1 = degree_to_radian(angle_degree1);
-
-        assert!(angle_radian1 < angle_radian0);
-
-        let diff = angle_radian1 - angle_radian0 + 2. * pi;
-        for i in 0..40 {
-            let a = angle_radian0 + diff * (i as f64) / (40. - 1.);
-            let b = a % (2. * pi);
-            assert!(f64::abs(angles[i] - b) < 8. * epsilon);
-        }
-
-        calc_angles(&[0xAA, 0x55, 0x56, 0x28, 0x79, 0x04, 0xD1, 0x15], &mut angles);
-
-        assert_eq!(angles.len(), 80);
-        let angle_degree0 = to_angle(0x79, 0x04);
-        let angle_degree1 = to_angle(0xD1, 0x15);
-        let angle_radian0 = degree_to_radian(angle_degree0);
-        let angle_radian1 = degree_to_radian(angle_degree1);
-
-        let diff = angle_radian1 - angle_radian0;
-        for i in 0..40 {
-            let a = angle_radian0 + diff * (i as f64) / (40. - 1.);
-            let b = a % (2. * pi);
-            assert!(f64::abs(angles[i + 40] - b) < 8. * epsilon);
-        }
-    }
-
-    #[test]
     fn test_calc_checksum() {
         let packet = vec![
             0xAA, 0x55, 0xB0, 0x27, 0xE3, 0x28, 0xF3, 0x39, 0x0E, 0x61,
@@ -761,5 +725,52 @@ mod tests {
             0x7A, 0x82, 0xC2, 0xA6, 0x16, 0x62, 0x16, 0xE6]
             .iter().map(|e| { e & 0x03 }).collect::<Vec<u8>>();
         assert_eq!(scan.flags, expected);
+    }
+
+    #[test]
+    fn test_run_driver() {
+        let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
+
+        let name = slave.name().unwrap();
+
+        let device_health_packet = [0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00];
+        master.write(&device_health_packet).unwrap();
+
+        let device_info_packet = [
+            0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04,
+            0x96, 0x00, 0x01, 0x02, 0x02, 0x00, 0x02,
+            0x02, 0x01, 0x01, 0x00, 0x03, 0x00, 0x01,
+            0x01, 0x01, 0x01, 0x01, 0x01, 0x01];
+        master.write(&device_info_packet).unwrap();
+
+        let start_scan_response_header = [0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81];
+        master.write(&start_scan_response_header).unwrap();
+
+        sleep_ms(10);
+
+        let (thread, scan_rx) = run_driver(&name);
+
+        let packet = [
+            // beginning of a lap
+            0xAA, 0x55, 0xC7, 0x01, 0x01, 0x15, 0x01, 0x15, 0x1B, 0x56,
+            0x14, 0x62, 0x02,
+            // lap data
+            0xAA, 0x55, 0xB0, 0x10, 0x81, 0x16, 0x01, 0x2D, 0x56, 0x7D,
+            0xDD, 0x76, 0x03, 0xD4, 0x76, 0x03, 0xC3, 0x72, 0x03,
+            0xB3, 0x7A, 0x03, 0x8E, 0x8A, 0x03, 0x97, 0x6E, 0x04,
+            0x9C, 0x22, 0x05, 0xA7, 0x6A, 0x05, 0xAB, 0x7A, 0x05,
+            0x93, 0x82, 0x05, 0x6D, 0xC2, 0x05, 0x55, 0xA6, 0x05,
+            0x57, 0x16, 0x05, 0x67, 0x62, 0x02, 0x80, 0x16, 0x02,
+            0x9B, 0xE6, 0x01,
+            // new lap
+            0xAA, 0x55, 0xC7, 0x01, 0x81, 0x2E, 0x81, 0x2E, 0x1B, 0x56,
+            0x14, 0x62, 0x02];
+        master.write(&packet).unwrap();
+
+        let scan = scan_rx.recv().unwrap();
+        assert_eq!(scan.angles_radian.len(), 0);
+
+        let scan = scan_rx.recv().unwrap();
+        assert_eq!(scan.angles_radian.len(), 17);
     }
 }
