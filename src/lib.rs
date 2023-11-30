@@ -21,6 +21,7 @@ const LIDAR_CMD_SCAN : u8 = 0x60;
 const LIDAR_ANS_TYPE_DEVINFO : u8 = 0x4;
 const LIDAR_ANS_TYPE_DEVHEALTH : u8 = 0x6;
 const LIDAR_ANS_TYPE_MEASUREMENT : u8 = 0x81;
+const N_READ_TRIALS : usize = 3;
 
 fn send_data(port: &mut Box<dyn SerialPort>, data: &[u8]) {
     if let Err(e) = port.write(data) {
@@ -60,8 +61,8 @@ fn flush(port: &mut Box<dyn SerialPort>) {
     port.read(packet.as_mut_slice()).unwrap();
 }
 
-fn read(port: &mut Box<dyn SerialPort>, data_size: usize, n_trials: u32) -> Result<Vec<u8>, io::Error> {
-    for _ in 0..n_trials {
+fn read(port: &mut Box<dyn SerialPort>, data_size: usize) -> Result<Vec<u8>, io::Error> {
+    for _ in 0..N_READ_TRIALS {
         let n_read: usize = get_n_read(port);
 
         if n_read == 0 {
@@ -106,9 +107,9 @@ fn validate_response_header(header: &Vec<u8>, maybe_response_length: Option<u8>,
 
 fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     send_command(port, LIDAR_CMD_GET_DEVICE_HEALTH);
-    let header = read(port, HEADER_SIZE, 10).unwrap();
+    let header = read(port, HEADER_SIZE).unwrap();
     validate_response_header(&header, Some(3), LIDAR_ANS_TYPE_DEVHEALTH).unwrap();
-    let health = read(port, 3, 10).unwrap();
+    let health = read(port, 3).unwrap();
 
     if health[0] != 0 {  // Last two bit are reserved bits, which should be ignored.
         return Err(format!(
@@ -141,9 +142,9 @@ fn calc_checksum(packet: &[u8]) -> u16 {
 
 fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
     send_command(port, LIDAR_CMD_GET_DEVICE_INFO);
-    let header = read(port, HEADER_SIZE, 10).unwrap();
+    let header = read(port, HEADER_SIZE).unwrap();
     validate_response_header(&header, Some(20), LIDAR_ANS_TYPE_DEVINFO).unwrap();
-    let info = read(port, 20, 10).unwrap();
+    let info = read(port, 20).unwrap();
     return device_info::DeviceInfo {
         model_number: info[0],
         firmware_major_version: info[2],
@@ -155,7 +156,7 @@ fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
 
 fn start_scan(port: &mut Box<dyn SerialPort>) {
     send_command(port, LIDAR_CMD_SCAN);
-    let header = read(port, HEADER_SIZE, 10).unwrap();
+    let header = read(port, HEADER_SIZE).unwrap();
     validate_response_header(&header, None, LIDAR_ANS_TYPE_MEASUREMENT).unwrap();
 }
 
