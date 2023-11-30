@@ -282,7 +282,8 @@ pub struct Scan {
     pub angles_radian: Vec<f64>,
     pub distances: Vec<u16>,
     pub flags: Vec<u8>,
-    pub intensities: Vec<u8>
+    pub intensities: Vec<u8>,
+    pub checksum_correct: bool
 }
 
 impl Scan {
@@ -291,7 +292,8 @@ impl Scan {
             angles_radian: Vec::new(),
             distances: Vec::new(),
             flags: Vec::new(),
-            intensities: Vec::new()
+            intensities: Vec::new(),
+            checksum_correct: true
         }
     }
 }
@@ -323,8 +325,14 @@ fn read_device_signal(
     }
 }
 
-fn checksum_matched(packet: &[u8]) -> bool {
-    calc_checksum(&packet) == to_u16(packet[9], packet[8])
+fn err_if_checksum_mismatched(packet: &[u8]) -> Result<(), String> {
+    let calculated = calc_checksum(&packet);
+    let expected = to_u16(packet[9], packet[8]);
+    if calculated != expected {
+        return Err(
+            format!("Checksum mismatched. Calculated = {:04X}, expected = {:04X}.", calculated, expected));
+    }
+    Ok(())
 }
 
 fn parse_packets(
@@ -365,7 +373,12 @@ fn parse_packets(
             scan_tx.send(scan).unwrap();
             scan = Scan::new();
         }
-        assert!(checksum_matched(&packet));
+
+        if let Err(e) = err_if_checksum_mismatched(&packet) {
+            eprintln!("{:?}", e);
+            scan.checksum_correct = false;
+        }
+
         calc_angles(&packet, &mut scan.angles_radian);
         calc_distances(&packet, &mut scan.distances);
         get_intensities(&packet, &mut scan.intensities);
@@ -451,6 +464,10 @@ impl Drop for DriverThreads {
 mod tests {
     use super::*;
     use serialport::TTYPort;
+
+    fn radian_to_degree(e: f64) -> f64 {
+        e * 180. / std::f64::consts::PI
+    }
 
     #[test]
     fn test_split() {
@@ -626,10 +643,8 @@ mod tests {
     }
 
     #[test]
-    fn test_run_driver() {
+    fn test_run_driver_normal_data() {
         let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
-
-        let name = slave.name().unwrap();
 
         let device_health_packet = [0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00];
         master.write(&device_health_packet).unwrap();
@@ -646,6 +661,7 @@ mod tests {
 
         sleep_ms(10);
 
+        let name = slave.name().unwrap();
         let (thread, scan_rx) = run_driver(&name);
 
         let packet = [
@@ -671,16 +687,15 @@ mod tests {
         let scan = scan_rx.recv().unwrap();
         assert_eq!(scan.angles_radian.len(), 17);
 
-        let angle_to_radian = |e| { e * std::f64::consts::PI / 180. };
         let expected = vec![
             42.,
             45., 48., 51., 54., 57., 60., 63., 66.,
-            69., 72., 75., 78., 81., 84., 87., 90.]
-            .iter().map(angle_to_radian).collect::<Vec<f64>>();
+            69., 72., 75., 78., 81., 84., 87., 90.];
 
         assert_eq!(scan.angles_radian.len(), expected.len());
         for i in 0..expected.len() {
-            assert!(f64::abs(scan.angles_radian[i] - expected[i]) < 1e-16);
+            let degree = radian_to_degree(scan.angles_radian[i]);
+            assert!(f64::abs(degree - expected[i]) < 1e-8);
         }
 
         let expected = vec![
@@ -715,5 +730,61 @@ mod tests {
             0x7A, 0x82, 0xC2, 0xA6, 0x16, 0x62, 0x16, 0xE6]
             .iter().map(|e| { e & 0x03 }).collect::<Vec<u8>>();
         assert_eq!(scan.flags, expected);
+
+        drop(thread);
+    }
+
+    #[test]
+    fn test_run_driver_mod_at_360() {
+        let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
+
+        let device_health_packet = [0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00];
+        master.write(&device_health_packet).unwrap();
+
+        let device_info_packet = [
+            0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04,
+            0x96, 0x00, 0x01, 0x02, 0x02, 0x00, 0x02,
+            0x02, 0x01, 0x01, 0x00, 0x03, 0x00, 0x01,
+            0x01, 0x01, 0x01, 0x01, 0x01, 0x01];
+        master.write(&device_info_packet).unwrap();
+
+        let start_scan_response_header = [0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81];
+        master.write(&start_scan_response_header).unwrap();
+
+        sleep_ms(10);
+
+        let name = slave.name().unwrap();
+        let (thread, scan_rx) = run_driver(&name);
+
+        let packet = [
+            // lap data
+            0xAA, 0x55, 0xB0, 0x10, 0x01, 0x96, 0x01, 0x0F, 0xD6, 0xDF,
+            0xDD, 0x76, 0x03, 0xD4, 0x76, 0x03, 0xC3, 0x72, 0x03,
+            0xB3, 0x7A, 0x03, 0x8E, 0x8A, 0x03, 0x97, 0x6E, 0x04,
+            0x9C, 0x22, 0x05, 0xA7, 0x6A, 0x05, 0xAB, 0x7A, 0x05,
+            0x93, 0x82, 0x05, 0x6D, 0xC2, 0x05, 0x55, 0xA6, 0x05,
+            0x57, 0x16, 0x05, 0x67, 0x62, 0x02, 0x80, 0x16, 0x02,
+            0x9B, 0xE6, 0x01,
+            // new lap
+            0xAA, 0x55, 0xC7, 0x01, 0x81, 0x2E, 0x81, 0x2E, 0x1B, 0x56,
+            0x14, 0x62, 0x02];
+        master.write(&packet).unwrap();
+
+        sleep_ms(10);
+
+        let scan = scan_rx.recv().unwrap();
+        assert_eq!(scan.angles_radian.len(), 16);
+
+        let expected = vec![
+            300., 306., 312., 318., 324., 330., 336., 342., 348., 354.,
+            0., 6., 12., 18., 24., 30.];
+
+        assert_eq!(scan.angles_radian.len(), expected.len());
+        for i in 0..expected.len() {
+            let degree = radian_to_degree(scan.angles_radian[i]);
+            assert!(f64::abs(degree - expected[i]) < 1e-8);
+        }
+
+        drop(thread);
     }
 }
