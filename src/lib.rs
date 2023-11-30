@@ -42,10 +42,6 @@ fn timeout_error(message: &str) -> io::Error {
     return io::Error::new(io::ErrorKind::TimedOut, message);
 }
 
-fn other_error(message: &str) -> io::Error {
-    return io::Error::new(io::ErrorKind::Other, message);
-}
-
 fn get_n_read(port: &mut Box<dyn SerialPort>) -> usize {
     let n_u32: u32 = port.bytes_to_read().unwrap();
     let n_read: usize = n_u32.try_into().unwrap();
@@ -62,17 +58,13 @@ fn flush(port: &mut Box<dyn SerialPort>) {
 }
 
 fn read(port: &mut Box<dyn SerialPort>, data_size: usize) -> Result<Vec<u8>, io::Error> {
+    assert!(data_size > 0);
     for _ in 0..N_READ_TRIALS {
         let n_read: usize = get_n_read(port);
 
-        if n_read == 0 {
+        if n_read < data_size {
             sleep_ms(10);
             continue;
-        }
-
-        if n_read < data_size {
-            let m = format!("Tried to read {} bytes but obtained {} bytes.", data_size, n_read);
-            return Err(other_error(&m));
         }
 
         let mut packet: Vec<u8> = vec![0; data_size];
@@ -335,11 +327,9 @@ fn read_device_signal(
         }
         let n_read: usize = get_n_read(port);
         if n_read == 0 {
-            sleep_ms(10);
             continue;
         }
-        let mut signal: Vec<u8> = vec![0; n_read];
-        port.read(signal.as_mut_slice()).unwrap();
+        let signal = read(port, n_read).unwrap();
         if let Err(e) = scan_data_tx.send(signal) {
             eprintln!("error: {e}");
         }
