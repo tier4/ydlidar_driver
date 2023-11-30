@@ -4,7 +4,6 @@ use std::sync::mpsc;
 use std::collections::VecDeque;
 use std::thread::JoinHandle;
 
-mod debug;
 mod device_info;
 mod ydlidar_models;
 
@@ -22,6 +21,10 @@ const LIDAR_ANS_TYPE_DEVINFO : u8 = 0x4;
 const LIDAR_ANS_TYPE_DEVHEALTH : u8 = 0x6;
 const LIDAR_ANS_TYPE_MEASUREMENT : u8 = 0x81;
 const N_READ_TRIALS : usize = 3;
+
+fn to_string(data: &[u8]) -> String {
+    return data.iter().map(|e| format!("{:02X}", e)).collect::<Vec<_>>().join(" ");
+}
 
 fn send_data(port: &mut Box<dyn SerialPort>, data: &[u8]) {
     if let Err(e) = port.write(data) {
@@ -81,7 +84,7 @@ fn validate_response_header(header: &Vec<u8>, maybe_response_length: Option<u8>,
         return Err(format!("Response header must be always seven bytes. Actually {} bytes.", header.len()));
     }
     if header[0] != 0xA5 || header[1] != 0x5A {
-        return Err(format!("Header sign must start with 0xA55A. Observed = {}.", debug::to_string(&header[0..2])));
+        return Err(format!("Header sign must start with 0xA55A. Observed = {}.", to_string(&header[0..2])));
     }
     match maybe_response_length {
         None => (),
@@ -448,6 +451,12 @@ impl Drop for DriverThreads {
 mod tests {
     use super::*;
     use serialport::TTYPort;
+
+    #[test]
+    fn test_split() {
+        let s = to_string(&[0xAA, 0x55, 0x00, 0x28]);
+        assert_eq!(s, "AA 55 00 28");
+    }
 
     #[test]
     fn test_validate_response_header() {
