@@ -229,24 +229,8 @@ fn calc_distances(packet : &[u8], distances: &mut Vec<u16>) {
     }
 }
 
-fn check_packet_size(packet: &[u8]) -> Result<(), String> {
-    let expected = 10 + n_scan_samples(packet) * 3;
-    if packet.len() >= expected {
-        return Ok(());
-    }
-    Err(format!("Scan packet size is insufficient. Required {} bytes. Actual {} bytes.",
-                expected, packet.len()))
-}
-
 fn is_packet_header(element0: u8, element1: u8) -> bool {
     element0 == 0xAA && element1 == 0x55
-}
-
-fn check_scan_packet_header(packet: &[u8]) -> Result<(), String> {
-    if is_packet_header(packet[0], packet[1]) {
-        return Ok(());
-    }
-    Err("Scan packet must start with 0xAA55".to_string())
 }
 
 fn is_beginning_of_cycle(packet: &[u8]) -> bool {
