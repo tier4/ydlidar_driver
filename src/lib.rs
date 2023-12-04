@@ -232,9 +232,25 @@ fn scan_indices(n_scan_samples: usize) -> impl Iterator<Item = usize> {
     (0..n_scan_samples).map(|i| (10 + i * 3) as usize)
 }
 
-fn get_flags(packet: &[u8], flags: &mut Vec<u8>) {
+#[derive(Clone, Debug, PartialEq)]
+pub enum Flag {
+    SpecularReflection,
+    AmbientLight,
+}
+
+fn to_flag(value: u8) -> Result<Flag, String> {
+    if value == 2 {
+        return Ok(Flag::SpecularReflection);
+    }
+    if value == 3 {
+        return Ok(Flag::AmbientLight);
+    }
+    Err(format!("No flag corresponding to value '{}' found.", value))
+}
+
+fn get_flags(packet: &[u8], flags: &mut Vec<Flag>) {
     for i in scan_indices(n_scan_samples(packet)) {
-        flags.push(packet[i + 1] & 0x03)
+        flags.push(to_flag(packet[i + 1] & 0x03).unwrap());
     }
 }
 
@@ -304,7 +320,7 @@ fn sendable_packet_range(buffer: &VecDeque<u8>) -> Result<(usize, usize), ()> {
 pub struct Scan {
     pub angles_radian: Vec<f64>,
     pub distances: Vec<u16>,
-    pub flags: Vec<u8>,
+    pub flags: Vec<Flag>,
     pub intensities: Vec<u8>,
     pub checksum_correct: bool,
 }
@@ -500,6 +516,16 @@ mod tests {
     fn test_split() {
         let s = to_string(&[0xAA, 0x55, 0x00, 0x28]);
         assert_eq!(s, "AA 55 00 28");
+    }
+
+    #[test]
+    fn test_to_flag() {
+        assert_eq!(to_flag(2), Ok(Flag::SpecularReflection));
+        assert_eq!(to_flag(3), Ok(Flag::AmbientLight));
+        assert_eq!(
+            to_flag(1),
+            Err("No flag corresponding to value '1' found.".to_string())
+        );
     }
 
     #[test]
@@ -726,14 +752,29 @@ mod tests {
 
         let packet = [
             // beginning of a lap
-            0xAA, 0x55, 0xC7, 0x01, 0x01, 0x15, 0x01, 0x15, 0x1B, 0x56, 0x14, 0x62, 0x02,
+            0xAA, 0x55, 0xC7, 0x01, 0x01, 0x15, 0x01, 0x15, 0x1B, 0x56, // packet header
+            0x14, 0x62, 0x02, // SpecularReflection
             // lap data
-            0xAA, 0x55, 0xB0, 0x10, 0x81, 0x16, 0x01, 0x2D, 0x56, 0x7D, 0xDD, 0x76, 0x03, 0xD4,
-            0x76, 0x03, 0xC3, 0x72, 0x03, 0xB3, 0x7A, 0x03, 0x8E, 0x8A, 0x03, 0x97, 0x6E, 0x04,
-            0x9C, 0x22, 0x05, 0xA7, 0x6A, 0x05, 0xAB, 0x7A, 0x05, 0x93, 0x82, 0x05, 0x6D, 0xC2,
-            0x05, 0x55, 0xA6, 0x05, 0x57, 0x16, 0x05, 0x67, 0x62, 0x02, 0x80, 0x16, 0x02, 0x9B,
-            0xE6, 0x01, // new lap
-            0xAA, 0x55, 0xC7, 0x01, 0x81, 0x2E, 0x81, 0x2E, 0x1B, 0x56, 0x14, 0x62, 0x02,
+            0xAA, 0x55, 0xB0, 0x10, 0x81, 0x16, 0x01, 0x2D, 0x57, 0x7D, // packet header
+            0xDD, 0x76, 0x03, // Specular Reflection
+            0xD4, 0x76, 0x03, // Specular Reflection
+            0xC3, 0x72, 0x03, // Specular Reflection
+            0xB3, 0x7B, 0x03, // Ambient Light
+            0x8E, 0x8A, 0x03, // Specular Reflection
+            0x97, 0x6E, 0x04, // Specular Reflection
+            0x9C, 0x22, 0x05, // Specular Reflection
+            0xA7, 0x6A, 0x05, // Specular Reflection
+            0xAB, 0x7A, 0x05, // Specular Reflection
+            0x93, 0x82, 0x05, // Specular Reflection
+            0x6D, 0xC2, 0x05, // Specular Reflection
+            0x55, 0xA6, 0x05, // Specular Reflection
+            0x57, 0x16, 0x05, // Specular Reflection
+            0x67, 0x62, 0x02, // Specular Reflection
+            0x80, 0x16, 0x02, // Specular Reflection
+            0x9B, 0xE6, 0x01, // Specular Reflection
+            // new lap
+            0xAA, 0x55, 0xC7, 0x01, 0x81, 0x2E, 0x81, 0x2E, 0x1B, 0x56, // packet header
+            0x14, 0x62, 0x02, // This signal will be regarded as a new lap
         ];
         master.write(&packet).unwrap();
 
@@ -764,7 +805,7 @@ mod tests {
             ((0x76 as u16) >> 2) + ((0x03 as u16) << 6),
             ((0x76 as u16) >> 2) + ((0x03 as u16) << 6),
             ((0x72 as u16) >> 2) + ((0x03 as u16) << 6),
-            ((0x7A as u16) >> 2) + ((0x03 as u16) << 6),
+            ((0x7B as u16) >> 2) + ((0x03 as u16) << 6),
             ((0x8A as u16) >> 2) + ((0x03 as u16) << 6),
             ((0x6E as u16) >> 2) + ((0x04 as u16) << 6),
             ((0x22 as u16) >> 2) + ((0x05 as u16) << 6),
@@ -780,13 +821,25 @@ mod tests {
         ];
         assert_eq!(scan.distances, expected);
 
-        let expected = [
-            0x62, 0x76, 0x76, 0x72, 0x7A, 0x8A, 0x6E, 0x22, 0x6A, 0x7A, 0x82, 0xC2, 0xA6, 0x16,
-            0x62, 0x16, 0xE6,
-        ]
-        .iter()
-        .map(|e| e & 0x03)
-        .collect::<Vec<u8>>();
+        let expected = vec![
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::AmbientLight,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+            Flag::SpecularReflection,
+        ];
         assert_eq!(scan.flags, expected);
 
         assert!(scan.checksum_correct);
