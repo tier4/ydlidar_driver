@@ -236,21 +236,22 @@ fn scan_indices(n_scan_samples: usize) -> impl Iterator<Item = usize> {
 pub enum Flag {
     SpecularReflection,
     AmbientLight,
+    Undefined,
 }
 
-fn to_flag(value: u8) -> Result<Flag, String> {
+fn to_flag(value: u8) -> Flag {
     if value == 2 {
-        return Ok(Flag::SpecularReflection);
+        return Flag::SpecularReflection;
     }
     if value == 3 {
-        return Ok(Flag::AmbientLight);
+        return Flag::AmbientLight;
     }
-    Err(format!("No flag corresponding to value '{}' found.", value))
+    Flag::Undefined
 }
 
 fn get_flags(packet: &[u8], flags: &mut Vec<Flag>) {
     for i in scan_indices(n_scan_samples(packet)) {
-        flags.push(to_flag(packet[i + 1] & 0x03).unwrap());
+        flags.push(to_flag(packet[i + 1] & 0x03));
     }
 }
 
@@ -450,7 +451,13 @@ pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
         }
     };
 
-    // stop_scan_and_flush(&mut port);
+    if !(cfg!(test)) {
+        // In testing, disable flushing to receive dummy signals
+        stop_scan_and_flush(&mut port);
+        sleep_ms(10);
+        stop_scan_and_flush(&mut port);
+    }
+
     check_device_health(&mut port).unwrap();
     let device_info = get_device_info(&mut port);
     if device_info.model_number != ydlidar_models::YdlidarModels::T_MINI_PRO {
@@ -483,7 +490,7 @@ pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
     (driver_threads, scan_rx)
 }
 
-fn join(driver_threads: &mut DriverThreads) {
+pub fn join(driver_threads: &mut DriverThreads) {
     driver_threads.reader_terminator_tx.send(true).unwrap();
     driver_threads.parser_terminator_tx.send(true).unwrap();
 
@@ -520,12 +527,9 @@ mod tests {
 
     #[test]
     fn test_to_flag() {
-        assert_eq!(to_flag(2), Ok(Flag::SpecularReflection));
-        assert_eq!(to_flag(3), Ok(Flag::AmbientLight));
-        assert_eq!(
-            to_flag(1),
-            Err("No flag corresponding to value '1' found.".to_string())
-        );
+        assert_eq!(to_flag(2), Flag::SpecularReflection);
+        assert_eq!(to_flag(3), Flag::AmbientLight);
+        assert_eq!(to_flag(1), Flag::Undefined);
     }
 
     #[test]
