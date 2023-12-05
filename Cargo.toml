@@ -11,3 +11,18 @@ serialport = "4.2.2"
 ctrlc = "3.4.0"
 crossbeam-channel = "0.5.8"
 crossbeam-utils = "0.8.16"
+
+[dev-dependencies]
+piston_window = "0.120.0"
+# plotters = { git = "https://github.com/plotters-rs/plotters", branch = "master" }
+
+[dependencies.plotters-backend]
+git = "https://github.com/plotters-rs/plotters"
+
+[dependencies.plotters-piston]
+git = "https://github.com/plotters-rs/plotters-piston"
+
+[dev-dependencies.plotters]
+default_features = false
+features = ["ttf", "all_series"]
+git = "https://github.com/plotters-rs/plotters"

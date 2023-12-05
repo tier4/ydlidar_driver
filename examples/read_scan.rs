@@ -2,8 +2,8 @@ use clap::{Arg, Command};
 use ydlidar_driver::run_driver;
 
 fn get_port_name() -> String {
-    let matches = Command::new("Serialport Example - Receive Data")
-        .about("Reads data from a serial port and echoes it to stdout.")
+    let matches = Command::new("LiDAR data receiver.")
+        .about("Reads data from LiDAR.")
         .disable_version_flag(true)
         .arg(
             Arg::new("port")
