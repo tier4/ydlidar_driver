@@ -232,24 +232,28 @@ fn scan_indices(n_scan_samples: usize) -> impl Iterator<Item = usize> {
     (0..n_scan_samples).map(|i| (10 + i * 3) as usize)
 }
 
+/// Interference flag corresponding to the scan signal.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Flag {
+pub enum InterferenceFlag {
+    /// The signal has the interference of specular reflection
     SpecularReflection,
+    /// The signal is interfered by ambient light
     AmbientLight,
-    Undefined,
+    /// Interference was not observed
+    Nothing,
 }
 
-fn to_flag(value: u8) -> Flag {
+fn to_flag(value: u8) -> InterferenceFlag {
     if value == 2 {
-        return Flag::SpecularReflection;
+        return InterferenceFlag::SpecularReflection;
     }
     if value == 3 {
-        return Flag::AmbientLight;
+        return InterferenceFlag::AmbientLight;
     }
-    Flag::Undefined
+    InterferenceFlag::Nothing
 }
 
-fn get_flags(packet: &[u8], flags: &mut Vec<Flag>) {
+fn get_flags(packet: &[u8], flags: &mut Vec<InterferenceFlag>) {
     for i in scan_indices(n_scan_samples(packet)) {
         flags.push(to_flag(packet[i + 1] & 0x03));
     }
@@ -318,11 +322,17 @@ fn sendable_packet_range(buffer: &VecDeque<u8>) -> Result<(usize, usize), ()> {
     Ok((start_index, end_index))
 }
 
+/// Struct to hold one lap of lidar scan data.
 pub struct Scan {
+    /// Scan angle in radian.
     pub angles_radian: Vec<f64>,
+    /// Distance to an object.
     pub distances: Vec<u16>,
-    pub flags: Vec<Flag>,
+    /// Interference status of the returned signal.
+    pub flags: Vec<InterferenceFlag>,
+    /// Return strength of the laser pulse.
     pub intensities: Vec<u8>,
+    /// Checksum valiadtion result of the scan signal.
     pub checksum_correct: bool,
 }
 
@@ -430,6 +440,7 @@ fn parse_packets(
     }
 }
 
+/// Struct that contains driver threads.
 pub struct DriverThreads {
     reader_terminator_tx: Sender<bool>,
     parser_terminator_tx: Sender<bool>,
@@ -437,6 +448,10 @@ pub struct DriverThreads {
     receiver_thread: Option<JoinHandle<()>>,
 }
 
+/// Function to launch YDLiDAR.
+/// # Arguments
+///
+/// * `port_name` - Serial port name such as `/dev/ttyUSB0`.
 pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
     let baud_rate = 230400; // fixed baud rate for YDLiDAR T-mini Pro
     let maybe_port = serialport::new(port_name, baud_rate)
@@ -490,6 +505,8 @@ pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
     (driver_threads, scan_rx)
 }
 
+/// Function to join driver threads.
+/// This function is automatically called when `driver_threads` is dropped.
 pub fn join(driver_threads: &mut DriverThreads) {
     driver_threads.reader_terminator_tx.send(true).unwrap();
     driver_threads.parser_terminator_tx.send(true).unwrap();
@@ -527,9 +544,9 @@ mod tests {
 
     #[test]
     fn test_to_flag() {
-        assert_eq!(to_flag(2), Flag::SpecularReflection);
-        assert_eq!(to_flag(3), Flag::AmbientLight);
-        assert_eq!(to_flag(1), Flag::Undefined);
+        assert_eq!(to_flag(2), InterferenceFlag::SpecularReflection);
+        assert_eq!(to_flag(3), InterferenceFlag::AmbientLight);
+        assert_eq!(to_flag(1), InterferenceFlag::Nothing);
     }
 
     #[test]
@@ -826,23 +843,23 @@ mod tests {
         assert_eq!(scan.distances, expected);
 
         let expected = vec![
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::AmbientLight,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
-            Flag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::AmbientLight,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
+            InterferenceFlag::SpecularReflection,
         ];
         assert_eq!(scan.flags, expected);
 
