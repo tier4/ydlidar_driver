@@ -1,25 +1,28 @@
 [package]
 name = "ydlidar_driver"
 version = "0.1.0"
+authors = ["Takeshi Ishita <ishitah.takeshi@gmail.com>"]
 edition = "2021"
+license = "MIT"
+description = "YDLiDAR Driver in Rust"
+repository = "https://github.com/tier4/ydlidar_driver"
+homepage = "https://tier4.jp/"
+keywords = ["LiDAR", "Driver", "Localization", "Perception"]
+categories = ["lidar", "localization"]
+readme = "README.md"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "3.1.6", features = ["derive"] }
 serialport = "4.2.2"
-ctrlc = "3.4.0"
 crossbeam-channel = "0.5.8"
 crossbeam-utils = "0.8.16"
 
 [dev-dependencies]
+clap = { version = "3.1.6", features = ["derive"] }
 piston_window = "0.120.0"
-# plotters = { git = "https://github.com/plotters-rs/plotters", branch = "master" }
 
-[dependencies.plotters-backend]
-git = "https://github.com/plotters-rs/plotters"
-
-[dependencies.plotters-piston]
+[dev-dependencies.plotters-piston]
 git = "https://github.com/plotters-rs/plotters-piston"
 
 [dev-dependencies.plotters]
