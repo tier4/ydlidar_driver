@@ -1,9 +1,9 @@
 name: Test
-on:
-  push:
-  schedule:
-    - cron 0 13 * * 1
 
+on:
+  schedule:
+    - cron:  '0 13 * * 1'
+  push:
 
 jobs:
   test:
