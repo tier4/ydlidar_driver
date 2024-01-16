@@ -1,10 +1,18 @@
-use std::collections::VecDeque;
+#[macro_use]
+extern crate alloc;
+
+use alloc::collections::VecDeque;
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use std::io;
 use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
+mod checksum;
 mod device_info;
+mod scan;
 mod ydlidar_models;
 
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -137,27 +145,6 @@ fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     return Ok(());
 }
 
-fn to_u16(a: u8, b: u8) -> u16 {
-    ((a as u16) << 8) + (b as u16)
-}
-
-fn calc_checksum(packet: &[u8]) -> u16 {
-    let n_scan = packet[3] as usize;
-
-    let mut checksum: u16 = to_u16(packet[1], packet[0]);
-    checksum ^= to_u16(packet[5], packet[4]);
-    for i in 0..n_scan {
-        let s0 = packet[10 + 3 * i + 0];
-        let s1 = packet[10 + 3 * i + 1];
-        let s2 = packet[10 + 3 * i + 2];
-        checksum ^= to_u16(0x00, s0);
-        checksum ^= to_u16(s2, s1);
-    }
-    checksum ^= to_u16(packet[3], packet[2]);
-    checksum ^= to_u16(packet[7], packet[6]);
-    checksum
-}
-
 fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
     send_command(port, LIDAR_CMD_GET_DEVICE_INFO);
     let header = read(port, HEADER_SIZE).unwrap();
@@ -188,100 +175,16 @@ fn stop_scan_and_flush(port: &mut Box<dyn SerialPort>) {
     flush(port);
 }
 
-fn to_angle(bit1: u8, bit2: u8) -> f64 {
-    let a = ((bit1 as u16) + ((bit2 as u16) << 8)) >> 1;
-    return (a as f64) / 64.;
-}
-
-fn n_scan_samples(packet: &[u8]) -> usize {
-    packet[3] as usize
-}
-
-fn degree_to_radian(degree: f64) -> f64 {
-    degree * std::f64::consts::PI / 180.
-}
-
-fn calc_angles(packet: &[u8], angles_radian: &mut Vec<f64>) {
-    let n = n_scan_samples(packet);
-    if n == 1 {
-        assert_eq!(packet[4], packet[6]);
-        assert_eq!(packet[5], packet[7]);
-        let angle_degree = to_angle(packet[4], packet[5]);
-        let angle_radian = degree_to_radian(angle_degree);
-        angles_radian.push(angle_radian);
-        return;
+fn get_packet_size(buffer: &VecDeque<u8>, start_index: usize) -> Result<usize, ()> {
+    let index = start_index + 3;
+    if index >= buffer.len() {
+        return Err(());
     }
-
-    let start_angle = to_angle(packet[4], packet[5]);
-    let end_angle = to_angle(packet[6], packet[7]);
-
-    let angle_rate: f64 = if start_angle < end_angle {
-        (end_angle - start_angle) / ((n - 1) as f64)
-    } else {
-        (end_angle - start_angle + 360.) / ((n - 1) as f64)
+    let n_scan_samples = match buffer.get(index) {
+        Some(n) => n,
+        None => return Err(()),
     };
-
-    for i in 0..n {
-        let angle_degree = (start_angle + (i as f64) * angle_rate) % 360.;
-        let angle_radian = degree_to_radian(angle_degree);
-        angles_radian.push(angle_radian);
-    }
-}
-
-fn scan_indices(n_scan_samples: usize) -> impl Iterator<Item = usize> {
-    (0..n_scan_samples).map(|i| (10 + i * 3) as usize)
-}
-
-/// Interference flag corresponding to the scan signal.
-#[derive(Clone, Debug, PartialEq)]
-pub enum InterferenceFlag {
-    /// The signal has the interference of specular reflection
-    SpecularReflection,
-    /// The signal is interfered by ambient light
-    AmbientLight,
-    /// Interference was not observed
-    Nothing,
-}
-
-fn to_flag(value: u8) -> InterferenceFlag {
-    if value == 2 {
-        return InterferenceFlag::SpecularReflection;
-    }
-    if value == 3 {
-        return InterferenceFlag::AmbientLight;
-    }
-    InterferenceFlag::Nothing
-}
-
-fn get_flags(packet: &[u8], flags: &mut Vec<InterferenceFlag>) {
-    for i in scan_indices(n_scan_samples(packet)) {
-        flags.push(to_flag(packet[i + 1] & 0x03));
-    }
-}
-
-fn get_intensities(packet: &[u8], intensities: &mut Vec<u8>) {
-    for i in scan_indices(n_scan_samples(packet)) {
-        intensities.push(packet[i] as u8)
-    }
-}
-
-fn calc_distance(b1: u8, b2: u8) -> u16 {
-    ((b2 as u16) << 6) + ((b1 as u16) >> 2)
-}
-
-fn calc_distances(packet: &[u8], distances: &mut Vec<u16>) {
-    for i in scan_indices(n_scan_samples(packet)) {
-        let d = calc_distance(packet[i + 1], packet[i + 2]);
-        distances.push(d);
-    }
-}
-
-fn is_packet_header(element0: u8, element1: u8) -> bool {
-    element0 == 0xAA && element1 == 0x55
-}
-
-fn is_beginning_of_cycle(packet: &[u8]) -> bool {
-    packet[2] & 0x01 == 1
+    Ok((10 + n_scan_samples * 3) as usize)
 }
 
 fn find_start_index(buffer: &VecDeque<u8>) -> Result<usize, ()> {
@@ -297,23 +200,11 @@ fn find_start_index(buffer: &VecDeque<u8>) -> Result<usize, ()> {
             Some(e) => e,
             None => continue,
         };
-        if is_packet_header(*e0, *e1) {
+        if scan::is_packet_header(*e0, *e1) {
             return Ok(i);
         }
     }
     Err(())
-}
-
-fn get_packet_size(buffer: &VecDeque<u8>, start_index: usize) -> Result<usize, ()> {
-    let index = start_index + 3;
-    if index >= buffer.len() {
-        return Err(());
-    }
-    let n_scan_samples = match buffer.get(index) {
-        Some(n) => n,
-        None => return Err(()),
-    };
-    Ok((10 + n_scan_samples * 3) as usize)
 }
 
 fn sendable_packet_range(buffer: &VecDeque<u8>) -> Result<(usize, usize), ()> {
@@ -329,7 +220,7 @@ pub struct Scan {
     /// Distance to an object.
     pub distances: Vec<u16>,
     /// Interference status of the returned signal.
-    pub flags: Vec<InterferenceFlag>,
+    pub flags: Vec<scan::InterferenceFlag>,
     /// Return strength of the laser pulse.
     pub intensities: Vec<u8>,
     /// Checksum valiadtion result of the scan signal.
@@ -376,18 +267,6 @@ fn read_device_signal(
     }
 }
 
-fn err_if_checksum_mismatched(packet: &[u8]) -> Result<(), String> {
-    let calculated = calc_checksum(&packet);
-    let expected = to_u16(packet[9], packet[8]);
-    if calculated != expected {
-        return Err(format!(
-            "Checksum mismatched. Calculated = {:04X}, expected = {:04X}.",
-            calculated, expected
-        ));
-    }
-    Ok(())
-}
-
 fn parse_packets(
     scan_data_rx: mpsc::Receiver<Vec<u8>>,
     parser_terminator_rx: Receiver<bool>,
@@ -423,20 +302,20 @@ fn parse_packets(
             continue;
         }
         let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<_>>();
-        if is_beginning_of_cycle(&packet) {
+        if scan::is_beginning_of_cycle(&packet) {
             scan_tx.send(scan).unwrap();
             scan = Scan::new();
         }
 
-        if let Err(e) = err_if_checksum_mismatched(&packet) {
+        if let Err(e) = checksum::err_if_checksum_mismatched(&packet) {
             eprintln!("{:?}", e);
             scan.checksum_correct = false;
         }
 
-        calc_angles(&packet, &mut scan.angles_radian);
-        calc_distances(&packet, &mut scan.distances);
-        get_intensities(&packet, &mut scan.intensities);
-        get_flags(&packet, &mut scan.flags);
+        scan::calc_angles(&packet, &mut scan.angles_radian);
+        scan::calc_distances(&packet, &mut scan.distances);
+        scan::get_intensities(&packet, &mut scan.intensities);
+        scan::get_flags(&packet, &mut scan.flags);
     }
 }
 
@@ -540,13 +419,6 @@ mod tests {
     fn test_split() {
         let s = to_string(&[0xAA, 0x55, 0x00, 0x28]);
         assert_eq!(s, "AA 55 00 28");
-    }
-
-    #[test]
-    fn test_to_flag() {
-        assert_eq!(to_flag(2), InterferenceFlag::SpecularReflection);
-        assert_eq!(to_flag(3), InterferenceFlag::AmbientLight);
-        assert_eq!(to_flag(1), InterferenceFlag::Nothing);
     }
 
     #[test]
@@ -716,41 +588,6 @@ mod tests {
     }
 
     #[test]
-    fn test_calc_checksum() {
-        let packet = vec![
-            0xAA, 0x55, 0xB0, 0x27, 0xE3, 0x28, 0xF3, 0x39, 0x0E, 0x61, 0x79, 0xB6, 0x05, 0x6F,
-            0x4E, 0x06, 0x61, 0x06, 0x06, 0x7A, 0x9A, 0x02, 0x9E, 0x5E, 0x02, 0xA6, 0x0A, 0x02,
-            0xA7, 0xE6, 0x01, 0xAE, 0xD6, 0x01, 0xBA, 0xD6, 0x01, 0xB8, 0xD2, 0x01, 0xB2, 0xD6,
-            0x01, 0xBD, 0xD2, 0x01, 0xDF, 0xDA, 0x01, 0xE1, 0xDA, 0x01, 0xDF, 0xDA, 0x01, 0xDC,
-            0xDE, 0x01, 0xDE, 0xDE, 0x01, 0xD8, 0xE2, 0x01, 0xD4, 0xDE, 0x01, 0xBA, 0xDE, 0x01,
-            0x84, 0xDF, 0x01, 0x2F, 0xAB, 0x01, 0x17, 0xEE, 0x01, 0x0F, 0x22, 0x02, 0x0C, 0x7E,
-            0x02, 0x0A, 0x02, 0x00, 0x0C, 0x9E, 0x02, 0x16, 0xA6, 0x02, 0x21, 0xA2, 0x02, 0x3A,
-            0x32, 0x03, 0x55, 0x4E, 0x0A, 0x87, 0x46, 0x0A, 0x85, 0x5A, 0x0A, 0x8A, 0x6E, 0x0A,
-            0x84, 0x9A, 0x0A, 0x7E, 0xCE, 0x0A, 0x4E, 0x7E, 0x04, 0x51, 0x6E, 0x03, 0x66, 0xA6,
-            0x02,
-        ];
-        let checksum = calc_checksum(&packet);
-        let expected = to_u16(packet[9], packet[8]);
-        assert_eq!(checksum, expected);
-
-        let packet = vec![
-            0xAA, 0x55, 0x24, 0x28, 0xF5, 0x4C, 0x85, 0x5E, 0x9D, 0x70, 0xCE, 0xE2, 0x07, 0xBC,
-            0xFA, 0x07, 0xCC, 0xB6, 0x07, 0xC8, 0xB6, 0x07, 0xC4, 0xBA, 0x07, 0xCB, 0xCA, 0x07,
-            0xC8, 0xAE, 0x09, 0xC5, 0x9E, 0x09, 0xC7, 0x9E, 0x09, 0xC2, 0x9E, 0x09, 0xC1, 0x92,
-            0x09, 0xC0, 0x8A, 0x09, 0xC1, 0x86, 0x09, 0xBE, 0x86, 0x09, 0xC5, 0x86, 0x09, 0xC3,
-            0x8A, 0x09, 0xBC, 0x8A, 0x09, 0xC6, 0x8A, 0x09, 0xC6, 0x8A, 0x09, 0xC2, 0x8E, 0x09,
-            0xC5, 0x8E, 0x09, 0xC3, 0x92, 0x09, 0xC4, 0xAA, 0x09, 0xC9, 0xB2, 0x09, 0xC9, 0xBA,
-            0x09, 0xC5, 0xC2, 0x09, 0xC9, 0xCE, 0x09, 0xBF, 0xCE, 0x09, 0xBE, 0xCE, 0x09, 0xBA,
-            0xCE, 0x09, 0xBE, 0xD6, 0x09, 0xBB, 0xD6, 0x09, 0xBF, 0xE2, 0x09, 0xBB, 0xF2, 0x09,
-            0xC1, 0x0A, 0x0A, 0xBF, 0x1A, 0x0A, 0xB9, 0x1E, 0x0A, 0xAA, 0x22, 0x0A, 0x9E, 0x2A,
-            0x0A, 0xCB, 0x7A, 0x15,
-        ];
-        let checksum = calc_checksum(&packet);
-        let expected = to_u16(packet[9], packet[8]);
-        assert_eq!(checksum, expected);
-    }
-
-    #[test]
     fn test_run_driver_normal_data() {
         let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
 
@@ -843,23 +680,23 @@ mod tests {
         assert_eq!(scan.distances, expected);
 
         let expected = vec![
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::AmbientLight,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
-            InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::AmbientLight,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
+            scan::InterferenceFlag::SpecularReflection,
         ];
         assert_eq!(scan.flags, expected);
 
