@@ -86,10 +86,6 @@ pub fn calc_distances(packet: &[u8], distances: &mut Vec<u16>) {
     }
 }
 
-pub fn is_packet_header(element0: u8, element1: u8) -> bool {
-    element0 == 0xAA && element1 == 0x55
-}
-
 pub fn is_beginning_of_cycle(packet: &[u8]) -> bool {
     packet[2] & 0x01 == 1
 }
