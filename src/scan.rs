@@ -53,6 +53,32 @@ pub enum InterferenceFlag {
     Nothing,
 }
 
+/// Struct to hold one lap of lidar scan data.
+pub struct Scan {
+    /// Scan angle in radian.
+    pub angles_radian: Vec<f64>,
+    /// Distance to an object.
+    pub distances: Vec<u16>,
+    /// Interference status of the returned signal.
+    pub flags: Vec<InterferenceFlag>,
+    /// Return strength of the laser pulse.
+    pub intensities: Vec<u8>,
+    /// Checksum valiadtion result of the scan signal.
+    pub checksum_correct: bool,
+}
+
+impl Scan {
+    pub fn new() -> Scan {
+        Scan {
+            angles_radian: Vec::new(),
+            distances: Vec::new(),
+            flags: Vec::new(),
+            intensities: Vec::new(),
+            checksum_correct: true,
+        }
+    }
+}
+
 fn to_flag(value: u8) -> InterferenceFlag {
     if value == 2 {
         return InterferenceFlag::SpecularReflection;

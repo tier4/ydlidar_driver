@@ -53,32 +53,6 @@ fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
     };
 }
 
-/// Struct to hold one lap of lidar scan data.
-pub struct Scan {
-    /// Scan angle in radian.
-    pub angles_radian: Vec<f64>,
-    /// Distance to an object.
-    pub distances: Vec<u16>,
-    /// Interference status of the returned signal.
-    pub flags: Vec<scan::InterferenceFlag>,
-    /// Return strength of the laser pulse.
-    pub intensities: Vec<u8>,
-    /// Checksum valiadtion result of the scan signal.
-    pub checksum_correct: bool,
-}
-
-impl Scan {
-    fn new() -> Scan {
-        Scan {
-            angles_radian: Vec::new(),
-            distances: Vec::new(),
-            flags: Vec::new(),
-            intensities: Vec::new(),
-            checksum_correct: true,
-        }
-    }
-}
-
 fn do_terminate(terminator_rx: &Receiver<bool>) -> bool {
     if let Ok(terminate) = terminator_rx.try_recv() {
         return terminate;
@@ -110,10 +84,10 @@ fn read_device_signal(
 fn parse_packets(
     scan_data_rx: mpsc::Receiver<Vec<u8>>,
     parser_terminator_rx: Receiver<bool>,
-    scan_tx: mpsc::SyncSender<Scan>,
+    scan_tx: mpsc::SyncSender<scan::Scan>,
 ) {
     let mut buffer = VecDeque::<u8>::new();
-    let mut scan = Scan::new();
+    let mut scan = scan::Scan::new();
     loop {
         if do_terminate(&parser_terminator_rx) {
             return;
@@ -144,7 +118,7 @@ fn parse_packets(
         let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<_>>();
         if scan::is_beginning_of_cycle(&packet) {
             scan_tx.send(scan).unwrap();
-            scan = Scan::new();
+            scan = scan::Scan::new();
         }
 
         if let Err(e) = checksum::err_if_checksum_mismatched(&packet) {
@@ -171,7 +145,7 @@ pub struct DriverThreads {
 /// # Arguments
 ///
 /// * `port_name` - Serial port name such as `/dev/ttyUSB0`.
-pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
+pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<scan::Scan>) {
     let baud_rate = 230400; // fixed baud rate for YDLiDAR T-mini Pro
     let maybe_port = serialport::new(port_name, baud_rate)
         .timeout(std::time::Duration::from_millis(10))
@@ -209,7 +183,7 @@ pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
         read_device_signal(&mut port, scan_data_tx, reader_terminator_rx);
     }));
 
-    let (scan_tx, scan_rx) = mpsc::sync_channel::<Scan>(10);
+    let (scan_tx, scan_rx) = mpsc::sync_channel::<scan::Scan>(10);
     let receiver_thread = Some(std::thread::spawn(move || {
         parse_packets(scan_data_rx, parser_terminator_rx, scan_tx);
     }));
