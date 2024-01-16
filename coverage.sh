@@ -5,7 +5,7 @@ object_option=$( \
   for file in \
     $( \
       RUSTFLAGS="-C instrument-coverage" \
-        cargo test --tests --no-run --message-format=json \
+        cargo test --all --tests --no-run --message-format=json \
           | jq -r "select(.profile.test == true) | .filenames[]" \
           | grep -v dSYM - \
     ); \
@@ -21,7 +21,7 @@ function cleanup() {
 cleanup && \
     rm -rf coverage && \
     RUSTFLAGS="-C instrument-coverage" cargo test --tests && \
-    llvm-profdata merge -sparse *.profraw -o $name.profdata && \
+    llvm-profdata merge -sparse $(find . -name "*.profraw") -o $name.profdata && \
     llvm-cov report $object_option \
         --use-color \
         --ignore-filename-regex='/.cargo/registry' \
@@ -36,5 +36,5 @@ cleanup && \
         --show-instantiations --show-line-counts-or-regions \
         --Xdemangler=rustfilt \
         --format=html \
-        --output-dir=coverage &&
+        --output-dir=coverage && \
         cleanup
