@@ -15,7 +15,7 @@ object_option=$( \
 )
 
 function cleanup() {
-    rm -rf *.profraw *.profdata
+    rm -rf $(find . -name "*.profraw") *.profdata
 }
 
 cleanup && \
