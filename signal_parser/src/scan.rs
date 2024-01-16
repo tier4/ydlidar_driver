@@ -1,3 +1,6 @@
+use alloc::vec::Vec;
+use core::f64::consts;
+
 fn to_angle(bit1: u8, bit2: u8) -> f64 {
     let a = ((bit1 as u16) + ((bit2 as u16) << 8)) >> 1;
     return (a as f64) / 64.;
@@ -8,7 +11,7 @@ fn n_scan_samples(packet: &[u8]) -> usize {
 }
 
 fn degree_to_radian(degree: f64) -> f64 {
-    degree * std::f64::consts::PI / 180.
+    degree * consts::PI / 180.
 }
 
 pub fn calc_angles(packet: &[u8], angles_radian: &mut Vec<f64>) {

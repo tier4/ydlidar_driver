@@ -1,3 +1,6 @@
+use alloc::string::String;
+use alloc::vec::Vec;
+
 pub const HEADER_SIZE: usize = 7;
 
 fn to_string(data: &[u8]) -> String {
@@ -48,6 +51,7 @@ pub fn validate_response_header(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
 
     #[test]
     fn test_to_string() {
