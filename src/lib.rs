@@ -13,13 +13,13 @@ use std::thread::JoinHandle;
 mod buffer;
 mod checksum;
 mod device_info;
+mod header;
 mod scan;
 mod ydlidar_models;
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use serialport::SerialPort;
 
-const HEADER_SIZE: usize = 7;
 const LIDAR_CMD_GET_DEVICE_HEALTH: u8 = 0x92;
 const LIDAR_CMD_GET_DEVICE_INFO: u8 = 0x90;
 const LIDAR_CMD_SYNC_BYTE: u8 = 0xA5;
@@ -30,14 +30,6 @@ const LIDAR_ANS_TYPE_DEVINFO: u8 = 0x4;
 const LIDAR_ANS_TYPE_DEVHEALTH: u8 = 0x6;
 const LIDAR_ANS_TYPE_MEASUREMENT: u8 = 0x81;
 const N_READ_TRIALS: usize = 3;
-
-fn to_string(data: &[u8]) -> String {
-    return data
-        .iter()
-        .map(|e| format!("{:02X}", e))
-        .collect::<Vec<_>>()
-        .join(" ");
-}
 
 fn send_data(port: &mut Box<dyn SerialPort>, data: &[u8]) {
     if let Err(e) = port.write(data) {
@@ -92,47 +84,10 @@ fn read(port: &mut Box<dyn SerialPort>, data_size: usize) -> Result<Vec<u8>, io:
     return Err(timeout_error("Operation timed out"));
 }
 
-fn validate_response_header(
-    header: &Vec<u8>,
-    maybe_response_length: Option<u8>,
-    type_code: u8,
-) -> Result<(), String> {
-    if header.len() != HEADER_SIZE {
-        return Err(format!(
-            "Response header must be always seven bytes. Actually {} bytes.",
-            header.len()
-        ));
-    }
-    if header[0] != 0xA5 || header[1] != 0x5A {
-        return Err(format!(
-            "Header sign must start with 0xA55A. Observed = {}.",
-            to_string(&header[0..2])
-        ));
-    }
-    match maybe_response_length {
-        None => (),
-        Some(len) => {
-            if header[2] != len {
-                return Err(format!(
-                    "Expected response length of {} bytes but found {} bytes.",
-                    len, header[2]
-                ));
-            }
-        }
-    }
-    if header[6] != type_code {
-        return Err(format!(
-            "Expected type code {} but obtained {}.",
-            type_code, header[6]
-        ));
-    }
-    return Ok(());
-}
-
 fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     send_command(port, LIDAR_CMD_GET_DEVICE_HEALTH);
-    let header = read(port, HEADER_SIZE).unwrap();
-    validate_response_header(&header, Some(3), LIDAR_ANS_TYPE_DEVHEALTH).unwrap();
+    let header = read(port, header::HEADER_SIZE).unwrap();
+    header::validate_response_header(&header, Some(3), LIDAR_ANS_TYPE_DEVHEALTH).unwrap();
     let health = read(port, 3).unwrap();
 
     if health[0] != 0 {
@@ -148,8 +103,8 @@ fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
 
 fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
     send_command(port, LIDAR_CMD_GET_DEVICE_INFO);
-    let header = read(port, HEADER_SIZE).unwrap();
-    validate_response_header(&header, Some(20), LIDAR_ANS_TYPE_DEVINFO).unwrap();
+    let header = read(port, header::HEADER_SIZE).unwrap();
+    header::validate_response_header(&header, Some(20), LIDAR_ANS_TYPE_DEVINFO).unwrap();
     let info = read(port, 20).unwrap();
     return device_info::DeviceInfo {
         model_number: info[0],
@@ -162,8 +117,8 @@ fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
 
 fn start_scan(port: &mut Box<dyn SerialPort>) {
     send_command(port, LIDAR_CMD_SCAN);
-    let header = read(port, HEADER_SIZE).unwrap();
-    validate_response_header(&header, None, LIDAR_ANS_TYPE_MEASUREMENT).unwrap();
+    let header = read(port, header::HEADER_SIZE).unwrap();
+    header::validate_response_header(&header, None, LIDAR_ANS_TYPE_MEASUREMENT).unwrap();
 }
 
 fn stop_scan(port: &mut Box<dyn SerialPort>) {
@@ -376,69 +331,6 @@ mod tests {
 
     fn radian_to_degree(e: f64) -> f64 {
         e * 180. / std::f64::consts::PI
-    }
-
-    #[test]
-    fn test_split() {
-        let s = to_string(&[0xAA, 0x55, 0x00, 0x28]);
-        assert_eq!(s, "AA 55 00 28");
-    }
-
-    #[test]
-    fn test_validate_response_header() {
-        assert_eq!(
-            validate_response_header(
-                &vec![0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04],
-                Some(0x14),
-                0x04
-            ),
-            Ok(())
-        );
-
-        assert_eq!(
-            validate_response_header(
-                &vec![0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04, 0x09],
-                Some(0x14),
-                0x04
-            ),
-            Err("Response header must be always seven bytes. Actually 8 bytes.".to_string())
-        );
-
-        assert_eq!(
-            validate_response_header(
-                &vec![0xA6, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04],
-                Some(0x14),
-                0x04
-            ),
-            Err("Header sign must start with 0xA55A. Observed = A6 5A.".to_string())
-        );
-
-        assert_eq!(
-            validate_response_header(
-                &vec![0xA5, 0x2A, 0x14, 0x00, 0x00, 0x00, 0x04],
-                Some(0x14),
-                0x04
-            ),
-            Err("Header sign must start with 0xA55A. Observed = A5 2A.".to_string())
-        );
-
-        assert_eq!(
-            validate_response_header(
-                &vec![0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04],
-                Some(0x12),
-                0x04
-            ),
-            Err("Expected response length of 18 bytes but found 20 bytes.".to_string())
-        );
-
-        assert_eq!(
-            validate_response_header(
-                &vec![0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x08],
-                Some(0x14),
-                0x04
-            ),
-            Err("Expected type code 4 but obtained 8.".to_string())
-        );
     }
 
     #[test]
