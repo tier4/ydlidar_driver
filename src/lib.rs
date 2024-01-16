@@ -5,8 +5,6 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use std::io;
-use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
@@ -15,80 +13,20 @@ mod checksum;
 mod device_info;
 mod header;
 mod scan;
+mod serial;
+mod system_command;
+mod timer;
+mod type_code;
 mod ydlidar_models;
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use serialport::SerialPort;
 
-const LIDAR_CMD_GET_DEVICE_HEALTH: u8 = 0x92;
-const LIDAR_CMD_GET_DEVICE_INFO: u8 = 0x90;
-const LIDAR_CMD_SYNC_BYTE: u8 = 0xA5;
-const LIDAR_CMD_FORCE_STOP: u8 = 0x00;
-const LIDAR_CMD_STOP: u8 = 0x65;
-const LIDAR_CMD_SCAN: u8 = 0x60;
-const LIDAR_ANS_TYPE_DEVINFO: u8 = 0x4;
-const LIDAR_ANS_TYPE_DEVHEALTH: u8 = 0x6;
-const LIDAR_ANS_TYPE_MEASUREMENT: u8 = 0x81;
-const N_READ_TRIALS: usize = 3;
-
-fn send_data(port: &mut Box<dyn SerialPort>, data: &[u8]) {
-    if let Err(e) = port.write(data) {
-        eprintln!("{:?}", e);
-    }
-}
-
-fn send_command(port: &mut Box<dyn SerialPort>, command: u8) {
-    let data: [u8; 2] = [LIDAR_CMD_SYNC_BYTE, command];
-    send_data(port, &data);
-}
-
-fn sleep_ms(duration: u64) {
-    std::thread::sleep(std::time::Duration::from_millis(duration));
-}
-
-fn timeout_error(message: &str) -> io::Error {
-    return io::Error::new(io::ErrorKind::TimedOut, message);
-}
-
-fn get_n_read(port: &mut Box<dyn SerialPort>) -> usize {
-    let n_u32: u32 = port.bytes_to_read().unwrap();
-    let n_read: usize = n_u32.try_into().unwrap();
-    n_read
-}
-
-fn flush(port: &mut Box<dyn SerialPort>) {
-    let n_read: usize = get_n_read(port);
-    if n_read == 0 {
-        return;
-    }
-    let mut packet: Vec<u8> = vec![0; n_read];
-    port.read(packet.as_mut_slice()).unwrap();
-}
-
-fn read(port: &mut Box<dyn SerialPort>, data_size: usize) -> Result<Vec<u8>, io::Error> {
-    assert!(data_size > 0);
-    for _ in 0..N_READ_TRIALS {
-        let n_read: usize = get_n_read(port);
-
-        if n_read < data_size {
-            sleep_ms(10);
-            continue;
-        }
-
-        let mut packet: Vec<u8> = vec![0; data_size];
-        if let Err(e) = port.read(packet.as_mut_slice()) {
-            return Err(e);
-        }
-        return Ok(packet);
-    }
-    return Err(timeout_error("Operation timed out"));
-}
-
 fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
-    send_command(port, LIDAR_CMD_GET_DEVICE_HEALTH);
-    let header = read(port, header::HEADER_SIZE).unwrap();
-    header::validate_response_header(&header, Some(3), LIDAR_ANS_TYPE_DEVHEALTH).unwrap();
-    let health = read(port, 3).unwrap();
+    serial::send_command(port, system_command::GET_DEVICE_HEALTH);
+    let header = serial::read(port, header::HEADER_SIZE).unwrap();
+    header::validate_response_header(&header, Some(3), type_code::DEVHEALTH).unwrap();
+    let health = serial::read(port, 3).unwrap();
 
     if health[0] != 0 {
         // Last two bit are reserved bits, which should be ignored.
@@ -102,10 +40,10 @@ fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
 }
 
 fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
-    send_command(port, LIDAR_CMD_GET_DEVICE_INFO);
-    let header = read(port, header::HEADER_SIZE).unwrap();
-    header::validate_response_header(&header, Some(20), LIDAR_ANS_TYPE_DEVINFO).unwrap();
-    let info = read(port, 20).unwrap();
+    serial::send_command(port, system_command::GET_DEVICE_INFO);
+    let header = serial::read(port, header::HEADER_SIZE).unwrap();
+    header::validate_response_header(&header, Some(20), type_code::DEVINFO).unwrap();
+    let info = serial::read(port, 20).unwrap();
     return device_info::DeviceInfo {
         model_number: info[0],
         firmware_major_version: info[2],
@@ -113,22 +51,6 @@ fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
         hardware_version: info[3],
         serial_number: info[4..20].try_into().unwrap(),
     };
-}
-
-fn start_scan(port: &mut Box<dyn SerialPort>) {
-    send_command(port, LIDAR_CMD_SCAN);
-    let header = read(port, header::HEADER_SIZE).unwrap();
-    header::validate_response_header(&header, None, LIDAR_ANS_TYPE_MEASUREMENT).unwrap();
-}
-
-fn stop_scan(port: &mut Box<dyn SerialPort>) {
-    send_command(port, LIDAR_CMD_FORCE_STOP);
-    send_command(port, LIDAR_CMD_STOP);
-}
-
-fn stop_scan_and_flush(port: &mut Box<dyn SerialPort>) {
-    stop_scan(port);
-    flush(port);
 }
 
 /// Struct to hold one lap of lidar scan data.
@@ -171,14 +93,14 @@ fn read_device_signal(
 ) {
     loop {
         if do_terminate(&reader_terminator_rx) {
-            stop_scan_and_flush(port);
+            serial::stop_scan_and_flush(port);
             return;
         }
-        let n_read: usize = get_n_read(port);
+        let n_read: usize = serial::get_n_read(port);
         if n_read == 0 {
             continue;
         }
-        let signal = read(port, n_read).unwrap();
+        let signal = serial::read(port, n_read).unwrap();
         if let Err(e) = scan_data_tx.send(signal) {
             eprintln!("error: {e}");
         }
@@ -202,7 +124,7 @@ fn parse_packets(
                 buffer.extend(data);
             }
             Err(_) => {
-                sleep_ms(10);
+                timer::sleep_ms(10);
             }
         }
 
@@ -265,9 +187,9 @@ pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
 
     if !(cfg!(test)) {
         // In testing, disable flushing to receive dummy signals
-        stop_scan_and_flush(&mut port);
-        sleep_ms(10);
-        stop_scan_and_flush(&mut port);
+        serial::stop_scan_and_flush(&mut port);
+        timer::sleep_ms(10);
+        serial::stop_scan_and_flush(&mut port);
     }
 
     check_device_health(&mut port).unwrap();
@@ -281,7 +203,7 @@ pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
     let (parser_terminator_tx, parser_terminator_rx) = bounded(10);
     let (scan_data_tx, scan_data_rx) = mpsc::sync_channel::<Vec<u8>>(200);
 
-    start_scan(&mut port);
+    serial::start_scan(&mut port);
 
     let reader_thread = Some(std::thread::spawn(move || {
         read_device_signal(&mut port, scan_data_tx, reader_terminator_rx);
@@ -328,21 +250,10 @@ impl Drop for DriverThreads {
 mod tests {
     use super::*;
     use serialport::TTYPort;
+    use std::io::Write;
 
     fn radian_to_degree(e: f64) -> f64 {
         e * 180. / std::f64::consts::PI
-    }
-
-    #[test]
-    fn test_send_command() {
-        let (master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
-        let mut master_ptr = Box::new(master) as Box<dyn SerialPort>;
-        send_command(&mut master_ptr, 0x68);
-
-        sleep_ms(10);
-        let mut buf = [0u8; 2];
-        slave.read(&mut buf).unwrap();
-        assert_eq!(buf, [0xA5, 0x68]);
     }
 
     #[test]
@@ -353,39 +264,19 @@ mod tests {
         master
             .write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00])
             .unwrap();
-        sleep_ms(10);
+        timer::sleep_ms(10);
         assert_eq!(check_device_health(&mut slave_ptr), Ok(()));
 
         master
             .write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x02, 0x00, 0x00])
             .unwrap();
-        sleep_ms(10);
+        timer::sleep_ms(10);
         assert_eq!(
             check_device_health(&mut slave_ptr),
             Err("Device health error. Error code = 0b00000010. \
                  See the development manual for details."
                 .to_string())
         );
-    }
-
-    #[test]
-    fn test_flush() {
-        let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
-        master
-            .write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00])
-            .unwrap();
-
-        let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
-
-        sleep_ms(10);
-
-        assert_eq!(slave_ptr.bytes_to_read().unwrap(), 10);
-        flush(&mut slave_ptr);
-        assert_eq!(slave_ptr.bytes_to_read().unwrap(), 0);
-
-        // when zero bytes to read
-        flush(&mut slave_ptr);
-        assert_eq!(slave_ptr.bytes_to_read().unwrap(), 0);
     }
 
     #[test]
@@ -398,7 +289,7 @@ mod tests {
             ])
             .unwrap();
 
-        sleep_ms(10);
+        timer::sleep_ms(10);
 
         let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
         let info = get_device_info(&mut slave_ptr);
@@ -410,36 +301,6 @@ mod tests {
             info.serial_number,
             [2, 0, 2, 2, 1, 1, 0, 3, 0, 1, 1, 1, 1, 1, 1, 1]
         );
-    }
-
-    #[test]
-    fn test_start_scan() {
-        let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
-        master
-            .write(&[0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81])
-            .unwrap();
-
-        let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
-        start_scan(&mut slave_ptr);
-
-        sleep_ms(10);
-
-        let mut buf = [0u8; 2];
-        master.read(&mut buf).unwrap();
-        assert_eq!(buf, [0xA5, 0x60]);
-    }
-
-    #[test]
-    fn test_stop_scan() {
-        let (master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
-        let mut master_ptr = Box::new(master) as Box<dyn SerialPort>;
-        stop_scan(&mut master_ptr);
-
-        sleep_ms(10);
-
-        let mut buf = [0u8; 4];
-        slave.read(&mut buf).unwrap();
-        assert_eq!(buf, [0xA5, 0x00, 0xA5, 0x65]);
     }
 
     #[test]
@@ -458,7 +319,7 @@ mod tests {
         let start_scan_response_header = [0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81];
         master.write(&start_scan_response_header).unwrap();
 
-        sleep_ms(10);
+        timer::sleep_ms(10);
 
         let name = slave.name().unwrap();
         let (thread, scan_rx) = run_driver(&name);
@@ -576,7 +437,7 @@ mod tests {
         let start_scan_response_header = [0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81];
         master.write(&start_scan_response_header).unwrap();
 
-        sleep_ms(10);
+        timer::sleep_ms(10);
 
         let name = slave.name().unwrap();
         let (thread, scan_rx) = run_driver(&name);
@@ -592,7 +453,7 @@ mod tests {
         ];
         master.write(&packet).unwrap();
 
-        sleep_ms(10);
+        timer::sleep_ms(10);
 
         let scan = scan_rx.recv().unwrap();
         assert_eq!(scan.angles_radian.len(), 16);
@@ -628,7 +489,7 @@ mod tests {
         let start_scan_response_header = [0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81];
         master.write(&start_scan_response_header).unwrap();
 
-        sleep_ms(10);
+        timer::sleep_ms(10);
 
         let name = slave.name().unwrap();
         let (thread, scan_rx) = run_driver(&name);
