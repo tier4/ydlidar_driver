@@ -2,7 +2,6 @@ use serialport::SerialPort;
 use std::io;
 use std::io::{Read, Write};
 
-use crate::header;
 use crate::system_command;
 use crate::timer;
 use crate::type_code;
@@ -11,8 +10,8 @@ const N_READ_TRIALS: usize = 3;
 
 pub fn start_scan(port: &mut Box<dyn SerialPort>) {
     send_command(port, system_command::SCAN);
-    let header = read(port, header::HEADER_SIZE).unwrap();
-    header::validate_response_header(&header, None, type_code::MEASUREMENT).unwrap();
+    let header = read(port, signal_parser::HEADER_SIZE).unwrap();
+    signal_parser::validate_response_header(&header, None, type_code::MEASUREMENT).unwrap();
 }
 
 fn stop_scan(port: &mut Box<dyn SerialPort>) {

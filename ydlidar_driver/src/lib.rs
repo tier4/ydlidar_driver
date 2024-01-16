@@ -9,10 +9,7 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 mod buffer;
-mod checksum;
 mod device_info;
-mod header;
-mod scan;
 mod serial;
 mod system_command;
 mod timer;
@@ -21,11 +18,12 @@ mod ydlidar_models;
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use serialport::SerialPort;
+use signal_parser;
 
 fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     serial::send_command(port, system_command::GET_DEVICE_HEALTH);
-    let header = serial::read(port, header::HEADER_SIZE).unwrap();
-    header::validate_response_header(&header, Some(3), type_code::DEVHEALTH).unwrap();
+    let header = serial::read(port, signal_parser::HEADER_SIZE).unwrap();
+    signal_parser::validate_response_header(&header, Some(3), type_code::DEVHEALTH).unwrap();
     let health = serial::read(port, 3).unwrap();
 
     if health[0] != 0 {
@@ -41,8 +39,8 @@ fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
 
 fn get_device_info(port: &mut Box<dyn SerialPort>) -> device_info::DeviceInfo {
     serial::send_command(port, system_command::GET_DEVICE_INFO);
-    let header = serial::read(port, header::HEADER_SIZE).unwrap();
-    header::validate_response_header(&header, Some(20), type_code::DEVINFO).unwrap();
+    let header = serial::read(port, signal_parser::HEADER_SIZE).unwrap();
+    signal_parser::validate_response_header(&header, Some(20), type_code::DEVINFO).unwrap();
     let info = serial::read(port, 20).unwrap();
     return device_info::DeviceInfo {
         model_number: info[0],
@@ -84,10 +82,10 @@ fn read_device_signal(
 fn parse_packets(
     scan_data_rx: mpsc::Receiver<Vec<u8>>,
     parser_terminator_rx: Receiver<bool>,
-    scan_tx: mpsc::SyncSender<scan::Scan>,
+    scan_tx: mpsc::SyncSender<signal_parser::Scan>,
 ) {
     let mut buffer = VecDeque::<u8>::new();
-    let mut scan = scan::Scan::new();
+    let mut scan = signal_parser::Scan::new();
     loop {
         if do_terminate(&parser_terminator_rx) {
             return;
@@ -116,20 +114,20 @@ fn parse_packets(
             continue;
         }
         let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<_>>();
-        if scan::is_beginning_of_cycle(&packet) {
+        if signal_parser::is_beginning_of_cycle(&packet) {
             scan_tx.send(scan).unwrap();
-            scan = scan::Scan::new();
+            scan = signal_parser::Scan::new();
         }
 
-        if let Err(e) = checksum::err_if_checksum_mismatched(&packet) {
+        if let Err(e) = signal_parser::err_if_checksum_mismatched(&packet) {
             eprintln!("{:?}", e);
             scan.checksum_correct = false;
         }
 
-        scan::calc_angles(&packet, &mut scan.angles_radian);
-        scan::calc_distances(&packet, &mut scan.distances);
-        scan::get_intensities(&packet, &mut scan.intensities);
-        scan::get_flags(&packet, &mut scan.flags);
+        signal_parser::calc_angles(&packet, &mut scan.angles_radian);
+        signal_parser::calc_distances(&packet, &mut scan.distances);
+        signal_parser::get_intensities(&packet, &mut scan.intensities);
+        signal_parser::get_flags(&packet, &mut scan.flags);
     }
 }
 
@@ -145,7 +143,7 @@ pub struct DriverThreads {
 /// # Arguments
 ///
 /// * `port_name` - Serial port name such as `/dev/ttyUSB0`.
-pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<scan::Scan>) {
+pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<signal_parser::Scan>) {
     let baud_rate = 230400; // fixed baud rate for YDLiDAR T-mini Pro
     let maybe_port = serialport::new(port_name, baud_rate)
         .timeout(std::time::Duration::from_millis(10))
@@ -183,7 +181,7 @@ pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<scan::Scan>
         read_device_signal(&mut port, scan_data_tx, reader_terminator_rx);
     }));
 
-    let (scan_tx, scan_rx) = mpsc::sync_channel::<scan::Scan>(10);
+    let (scan_tx, scan_rx) = mpsc::sync_channel::<signal_parser::Scan>(10);
     let receiver_thread = Some(std::thread::spawn(move || {
         parse_packets(scan_data_rx, parser_terminator_rx, scan_tx);
     }));
@@ -370,23 +368,23 @@ mod tests {
         assert_eq!(scan.distances, expected);
 
         let expected = vec![
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::AmbientLight,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
-            scan::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::AmbientLight,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
+            signal_parser::InterferenceFlag::SpecularReflection,
         ];
         assert_eq!(scan.flags, expected);
 
