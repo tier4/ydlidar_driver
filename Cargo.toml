@@ -1,2 +1,39 @@
+[package]
+name = "ydlidar_driver"
+version = "0.1.0"
+authors = ["Takeshi Ishita <ishitah.takeshi@gmail.com>"]
+edition = "2021"
+license = "Apache-2.0"
+description = "YDLiDAR Driver in Rust"
+repository = "https://github.com/tier4/ydlidar_driver"
+homepage = "https://tier4.jp/"
+keywords = ["LiDAR", "Driver", "Localization", "Perception"]
+categories = ["lidar", "localization"]
+readme = "README.md"
+
+
 [workspace]
-members = ["ydlidar_driver", "signal_parser"]
+members = ["signal_parser"]
+
+[lib]
+name = "ydlidar_driver"
+path = "src/lib.rs"
+
+[dependencies]
+serialport = "4.2.2"
+crossbeam-channel = "0.5.8"
+crossbeam-utils = "0.8.16"
+signal_parser = { path = "signal_parser" }
+
+[dev-dependencies]
+clap = { version = "3.1.6", features = ["derive"] }
+piston_window = "0.120.0"
+
+[dev-dependencies.plotters-piston]
+git = "https://github.com/plotters-rs/plotters-piston.git"
+rev = "7293411c"
+
+[dev-dependencies.plotters]
+git = "https://github.com/plotters-rs/plotters.git"
+default_features = false
+features = ["ttf", "all_series"]
