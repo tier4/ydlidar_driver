@@ -8,7 +8,6 @@ use alloc::vec::Vec;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-mod buffer;
 mod device_info;
 mod serial;
 mod system_command;
@@ -19,7 +18,7 @@ mod ydlidar_models;
 use crossbeam_channel::{bounded, Receiver, Sender};
 use serialport::SerialPort;
 use ydlidar_signal_parser;
-use ydlidar_signal_parser::{validate_response_header, Scan};
+use ydlidar_signal_parser::{validate_response_header, Scan, sendable_packet_range};
 
 fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
     serial::send_command(port, system_command::GET_DEVICE_HEALTH);
@@ -105,7 +104,7 @@ fn parse_packets(
             continue;
         }
 
-        let (start_index, n_packet_bytes) = match buffer::sendable_packet_range(&buffer) {
+        let (start_index, n_packet_bytes) = match sendable_packet_range(&buffer) {
             Ok(t) => t,
             Err(_) => continue,
         };
