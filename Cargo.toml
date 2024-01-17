@@ -13,7 +13,7 @@ readme = "README.md"
 
 
 [workspace]
-members = ["signal_parser"]
+members = ["ydlidar_signal_parser"]
 
 [lib]
 name = "ydlidar_driver"
@@ -23,7 +23,7 @@ path = "src/lib.rs"
 serialport = "4.2.2"
 crossbeam-channel = "0.5.8"
 crossbeam-utils = "0.8.16"
-signal_parser = { path = "signal_parser" }
+ydlidar_signal_parser = { path = "ydlidar_signal_parser" }
 
 [dev-dependencies]
 clap = { version = "3.1.6", features = ["derive"] }

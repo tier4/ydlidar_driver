@@ -8,10 +8,12 @@ use crate::type_code;
 
 const N_READ_TRIALS: usize = 3;
 
+use ydlidar_signal_parser::validate_response_header;
+
 pub fn start_scan(port: &mut Box<dyn SerialPort>) {
     send_command(port, system_command::SCAN);
-    let header = read(port, signal_parser::HEADER_SIZE).unwrap();
-    signal_parser::validate_response_header(&header, None, type_code::MEASUREMENT).unwrap();
+    let header = read(port, ydlidar_signal_parser::HEADER_SIZE).unwrap();
+    validate_response_header(&header, None, type_code::MEASUREMENT).unwrap();
 }
 
 fn stop_scan(port: &mut Box<dyn SerialPort>) {

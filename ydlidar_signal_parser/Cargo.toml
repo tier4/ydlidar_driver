@@ -1,5 +1,5 @@
 [package]
-name = "signal_parser"
+name = "ydlidar_signal_parser"
 version = "0.1.0"
 edition = "2021"
 
