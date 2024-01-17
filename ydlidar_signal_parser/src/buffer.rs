@@ -41,6 +41,6 @@ fn find_start_index(buffer: &VecDeque<u8>) -> Result<usize, ()> {
 
 pub fn sendable_packet_range(buffer: &VecDeque<u8>) -> Result<(usize, usize), ()> {
     let start_index = find_start_index(buffer)?;
-    let end_index = get_packet_size(buffer, start_index)?;
-    Ok((start_index, end_index))
+    let size = get_packet_size(buffer, start_index)?;
+    Ok((start_index, size))
 }
