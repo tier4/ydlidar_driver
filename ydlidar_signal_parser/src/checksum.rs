@@ -1,7 +1,24 @@
 use alloc::string::String;
+use crate::alloc::string::ToString;
 
 fn to_u16(a: u8, b: u8) -> u16 {
     ((a as u16) << 8) + (b as u16)
+}
+
+fn check_packet_size(packet: &[u8]) -> Result<(), String> {
+    if packet.len() < 10 {
+        return Err("Packet length must be at least 10 bytes.".to_string());
+    }
+
+    let n_scan = packet[3] as usize;
+    let expected = 10 + 3 * n_scan;
+    if packet.len() < expected {
+        return Err(
+            format!("Packet length does not match the expected size. \
+                     Expected = {}. Actual = {}.", expected, packet.len()));
+    }
+
+    Ok(())
 }
 
 fn calc_checksum(packet: &[u8]) -> u16 {
@@ -22,6 +39,7 @@ fn calc_checksum(packet: &[u8]) -> u16 {
 }
 
 pub fn err_if_checksum_mismatched(packet: &[u8]) -> Result<(), String> {
+    check_packet_size(packet)?;
     let calculated = calc_checksum(&packet);
     let expected = to_u16(packet[9], packet[8]);
     if calculated != expected {
@@ -36,6 +54,24 @@ pub fn err_if_checksum_mismatched(packet: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_check_packet_size() {
+        assert_eq!(
+            check_packet_size(&[0xAA, 0x55, 0xB0, 0x00, 0xE3, 0x28, 0xF3, 0x39, 0x0E]),
+            Err("Packet length must be at least 10 bytes.".to_string()));
+
+        assert_eq!(
+            check_packet_size(&[0xAA, 0x55, 0xB0, 0x00, 0xE3, 0x28, 0xF3, 0x39, 0x0E, 0x61]),
+            Ok(()));
+
+        assert_eq!(
+            check_packet_size(
+                &[0xAA, 0x55, 0x24, 0x28, 0xF5, 0x4C,
+                  0x85, 0x5E, 0x9D, 0x70, 0xCE, 0xE2]),
+            Err("Packet length does not match the expected size. \
+                 Expected = 130. Actual = 12.".to_string()));
+    }
 
     #[test]
     fn test_calc_checksum() {
