@@ -1,5 +1,8 @@
 use alloc::collections::VecDeque;
 
+const START_ELEMENT0: u8 = 0xAA;
+const START_ELEMENT1: u8 = 0x55;
+
 fn get_packet_size(buffer: &VecDeque<u8>, start_index: usize) -> Result<usize, ()> {
     let index = start_index + 3;
     if index >= buffer.len() {
@@ -12,10 +15,6 @@ fn get_packet_size(buffer: &VecDeque<u8>, start_index: usize) -> Result<usize, (
     Ok((10 + n_scan_samples * 3) as usize)
 }
 
-fn is_packet_header(element0: u8, element1: u8) -> bool {
-    element0 == 0xAA && element1 == 0x55
-}
-
 fn find_start_index(buffer: &VecDeque<u8>) -> Result<usize, ()> {
     if buffer.len() == 0 {
         return Err(());
@@ -25,13 +24,17 @@ fn find_start_index(buffer: &VecDeque<u8>) -> Result<usize, ()> {
             Some(e) => e,
             None => continue,
         };
+        if *e0 != START_ELEMENT0 {
+            continue;
+        }
         let e1 = match buffer.get(i + 1) {
             Some(e) => e,
             None => continue,
         };
-        if is_packet_header(*e0, *e1) {
-            return Ok(i);
+        if *e1 != START_ELEMENT1 {
+            continue;
         }
+        return Ok(i);
     }
     Err(())
 }
