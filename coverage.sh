@@ -20,7 +20,7 @@ function cleanup() {
 
 cleanup && \
     rm -rf coverage && \
-    RUSTFLAGS="-C instrument-coverage" cargo test --tests && \
+    RUSTFLAGS="-C instrument-coverage" cargo test --tests --workspace && \
     llvm-profdata merge -sparse $(find . -name "*.profraw") -o $name.profdata && \
     llvm-cov report $object_option \
         --use-color \
