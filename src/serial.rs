@@ -10,15 +10,14 @@ const N_READ_TRIALS: usize = 3;
 
 use ydlidar_signal_parser::validate_response_header;
 
-pub fn start_scan(port: &mut Box<dyn SerialPort>) {
-    send_command(port, system_command::SCAN);
+pub fn start_scan(port: &mut Box<dyn SerialPort>, commands: &system_command::SystemCommand) {
+    send_command(port, commands.start_scan().unwrap());
     let header = read(port, ydlidar_signal_parser::HEADER_SIZE).unwrap();
     validate_response_header(&header, None, type_code::MEASUREMENT).unwrap();
 }
 
-fn stop_scan(port: &mut Box<dyn SerialPort>) {
-    send_command(port, system_command::FORCE_STOP);
-    send_command(port, system_command::STOP);
+fn stop_scan(port: &mut Box<dyn SerialPort>, commands: &system_command::SystemCommand) {
+    send_command(port, commands.stop_scan().unwrap());
 }
 
 fn flush(port: &mut Box<dyn SerialPort>) {
@@ -30,8 +29,8 @@ fn flush(port: &mut Box<dyn SerialPort>) {
     port.read(packet.as_mut_slice()).unwrap();
 }
 
-pub fn stop_scan_and_flush(port: &mut Box<dyn SerialPort>) {
-    stop_scan(port);
+pub fn stop_scan_and_flush(port: &mut Box<dyn SerialPort>, commands: &system_command::SystemCommand) {
+    stop_scan(port, commands);
     flush(port);
 }
 

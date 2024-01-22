@@ -19,9 +19,15 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use serialport::SerialPort;
 use ydlidar_signal_parser;
 use ydlidar_signal_parser::{validate_response_header, Scan, sendable_packet_range};
+use system_command::SystemCommand;
+use ydlidar_models::YdlidarModels;
 
-fn check_device_health(port: &mut Box<dyn SerialPort>) -> Result<(), String> {
-    serial::send_command(port, system_command::GET_DEVICE_HEALTH);
+
+fn check_device_health(
+    port: &mut Box<dyn SerialPort>,
+    commands: &system_command::SystemCommand)
+-> Result<(), String> {
+    serial::send_command(port, commands.get_devcice_health().unwrap());
     let header = serial::read(port, ydlidar_signal_parser::HEADER_SIZE).unwrap();
     validate_response_header(&header, Some(3), type_code::DEVHEALTH).unwrap();
     let health = serial::read(port, 3).unwrap();
@@ -60,12 +66,13 @@ fn do_terminate(terminator_rx: &Receiver<bool>) -> bool {
 
 fn read_device_signal(
     port: &mut Box<dyn SerialPort>,
+    commands: &system_command::SystemCommand,
     scan_data_tx: mpsc::SyncSender<Vec<u8>>,
     reader_terminator_rx: Receiver<bool>,
 ) {
     loop {
         if do_terminate(&reader_terminator_rx) {
-            serial::stop_scan_and_flush(port);
+            serial::stop_scan_and_flush(port, commands);
             return;
         }
         let n_read: usize = serial::get_n_read(port);
@@ -144,7 +151,8 @@ pub struct DriverThreads {
 ///
 /// * `port_name` - Serial port name such as `/dev/ttyUSB0`.
 pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
-    let baud_rate = 230400; // fixed baud rate for YDLiDAR T-mini Pro
+    // let baud_rate = 230400; // fixed baud rate for YDLiDAR T-mini Pro
+    let baud_rate = 512000; // fixed baud rate for YDLiDAR T-mini Pro
     let maybe_port = serialport::new(port_name, baud_rate)
         .timeout(std::time::Duration::from_millis(10))
         .open();
@@ -157,28 +165,27 @@ pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
         }
     };
 
+    let device_info = get_device_info(&mut port);
+    let ydlidar_model = YdlidarModels::new(device_info.model_number).unwrap();
+    let commands = SystemCommand::new(ydlidar_model);
+
     if !(cfg!(test)) {
         // In testing, disable flushing to receive dummy signals
-        serial::stop_scan_and_flush(&mut port);
+        serial::stop_scan_and_flush(&mut port, &commands);
         timer::sleep_ms(10);
-        serial::stop_scan_and_flush(&mut port);
+        serial::stop_scan_and_flush(&mut port, &commands);
     }
 
-    check_device_health(&mut port).unwrap();
-    let device_info = get_device_info(&mut port);
-    if device_info.model_number != ydlidar_models::YdlidarModels::T_MINI_PRO {
-        eprintln!("This package can handle only YDLiDAR T-mini Pro.");
-        std::process::exit(1);
-    }
+    check_device_health(&mut port, &commands).unwrap();
 
     let (reader_terminator_tx, reader_terminator_rx) = bounded(10);
     let (parser_terminator_tx, parser_terminator_rx) = bounded(10);
     let (scan_data_tx, scan_data_rx) = mpsc::sync_channel::<Vec<u8>>(200);
 
-    serial::start_scan(&mut port);
+    serial::start_scan(&mut port, &commands);
 
     let reader_thread = Some(std::thread::spawn(move || {
-        read_device_signal(&mut port, scan_data_tx, reader_terminator_rx);
+        read_device_signal(&mut port, &commands, scan_data_tx, reader_terminator_rx);
     }));
 
     let (scan_tx, scan_rx) = mpsc::sync_channel::<Scan>(10);
