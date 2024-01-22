@@ -78,6 +78,8 @@ pub fn read(port: &mut Box<dyn SerialPort>, data_size: usize) -> Result<Vec<u8>,
 mod tests {
     use super::*;
     use serialport::TTYPort;
+    use crate::system_command::SystemCommand;
+    use crate::ydlidar_models::YdlidarModels;
 
     #[test]
     fn test_send_command() {
@@ -113,13 +115,17 @@ mod tests {
 
     #[test]
     fn test_start_scan() {
+        let t_mini_pro_model_number = 150;
+        let ydlidar_model = YdlidarModels::new(t_mini_pro_model_number).unwrap();
+        let commands = SystemCommand::new(ydlidar_model);
+
         let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
         master
             .write(&[0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81])
             .unwrap();
 
         let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
-        start_scan(&mut slave_ptr);
+        start_scan(&mut slave_ptr, &commands);
 
         timer::sleep_ms(10);
 
@@ -130,14 +136,18 @@ mod tests {
 
     #[test]
     fn test_stop_scan() {
+        let t_mini_pro_model_number = 150;
+        let ydlidar_model = YdlidarModels::new(t_mini_pro_model_number).unwrap();
+        let commands = SystemCommand::new(ydlidar_model);
+
         let (master, mut slave) = TTYPort::pair().expect("Unable to create ptty pair");
         let mut master_ptr = Box::new(master) as Box<dyn SerialPort>;
-        stop_scan(&mut master_ptr);
+        stop_scan(&mut master_ptr, &commands);
 
         timer::sleep_ms(10);
 
-        let mut buf = [0u8; 4];
+        let mut buf = [0u8; 2];
         slave.read(&mut buf).unwrap();
-        assert_eq!(buf, [0xA5, 0x00, 0xA5, 0x65]);
+        assert_eq!(buf, [0xA5, 0x65]);
     }
 }

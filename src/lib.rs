@@ -238,6 +238,10 @@ mod tests {
 
     #[test]
     fn test_check_device_health() {
+        let t_mini_pro_model_number = 150;
+        let ydlidar_model = YdlidarModels::new(t_mini_pro_model_number).unwrap();
+        let commands = SystemCommand::new(ydlidar_model);
+
         let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
         let mut slave_ptr = Box::new(slave) as Box<dyn SerialPort>;
 
@@ -245,14 +249,14 @@ mod tests {
             .write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00])
             .unwrap();
         timer::sleep_ms(10);
-        assert_eq!(check_device_health(&mut slave_ptr), Ok(()));
+        assert_eq!(check_device_health(&mut slave_ptr, &commands), Ok(()));
 
         master
             .write(&[0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x02, 0x00, 0x00])
             .unwrap();
         timer::sleep_ms(10);
         assert_eq!(
-            check_device_health(&mut slave_ptr),
+            check_device_health(&mut slave_ptr, &commands),
             Err("Device health error. Error code = 0b00000010. \
                  See the development manual for details."
                 .to_string())
@@ -287,14 +291,14 @@ mod tests {
     fn test_run_driver_normal_data() {
         let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
 
-        let device_health_packet = [0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00];
-        master.write(&device_health_packet).unwrap();
-
         let device_info_packet = [
             0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04, 0x96, 0x00, 0x01, 0x02, 0x02, 0x00, 0x02,
             0x02, 0x01, 0x01, 0x00, 0x03, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
         ];
         master.write(&device_info_packet).unwrap();
+
+        let device_health_packet = [0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00];
+        master.write(&device_health_packet).unwrap();
 
         let start_scan_response_header = [0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81];
         master.write(&start_scan_response_header).unwrap();
@@ -405,14 +409,14 @@ mod tests {
     fn test_run_driver_mod_at_360() {
         let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
 
-        let device_health_packet = [0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00];
-        master.write(&device_health_packet).unwrap();
-
         let device_info_packet = [
             0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04, 0x96, 0x00, 0x01, 0x02, 0x02, 0x00, 0x02,
             0x02, 0x01, 0x01, 0x00, 0x03, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
         ];
         master.write(&device_info_packet).unwrap();
+
+        let device_health_packet = [0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00];
+        master.write(&device_health_packet).unwrap();
 
         let start_scan_response_header = [0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81];
         master.write(&start_scan_response_header).unwrap();
@@ -457,14 +461,14 @@ mod tests {
     fn test_run_driver_checksum() {
         let (mut master, slave) = TTYPort::pair().expect("Unable to create ptty pair");
 
-        let device_health_packet = [0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00];
-        master.write(&device_health_packet).unwrap();
-
         let device_info_packet = [
             0xA5, 0x5A, 0x14, 0x00, 0x00, 0x00, 0x04, 0x96, 0x00, 0x01, 0x02, 0x02, 0x00, 0x02,
             0x02, 0x01, 0x01, 0x00, 0x03, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
         ];
         master.write(&device_info_packet).unwrap();
+
+        let device_health_packet = [0xA5, 0x5A, 0x03, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00];
+        master.write(&device_health_packet).unwrap();
 
         let start_scan_response_header = [0xA5, 0x5A, 0x05, 0x00, 0x00, 0x40, 0x81];
         master.write(&start_scan_response_header).unwrap();
