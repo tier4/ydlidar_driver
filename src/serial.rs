@@ -29,7 +29,10 @@ fn flush(port: &mut Box<dyn SerialPort>) {
     port.read(packet.as_mut_slice()).unwrap();
 }
 
-pub fn stop_scan_and_flush(port: &mut Box<dyn SerialPort>, commands: &system_command::SystemCommand) {
+pub fn stop_scan_and_flush(
+    port: &mut Box<dyn SerialPort>,
+    commands: &system_command::SystemCommand,
+) {
     stop_scan(port, commands);
     flush(port);
 }
@@ -77,9 +80,9 @@ pub fn read(port: &mut Box<dyn SerialPort>, data_size: usize) -> Result<Vec<u8>,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serialport::TTYPort;
     use crate::system_command::SystemCommand;
     use crate::ydlidar_models::YdlidarModels;
+    use serialport::TTYPort;
 
     #[test]
     fn test_send_command() {

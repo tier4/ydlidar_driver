@@ -9,7 +9,9 @@ pub struct SystemCommand {
 
 impl SystemCommand {
     pub fn new(model_number: YdlidarModels) -> Self {
-        SystemCommand { model_number: model_number }
+        SystemCommand {
+            model_number: model_number,
+        }
     }
 
     pub fn get_devcice_health(&self) -> Result<u8, String> {

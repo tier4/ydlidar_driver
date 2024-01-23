@@ -1,21 +1,21 @@
+use crate::numeric::to_u16;
 use alloc::string::String;
-use crate::alloc::string::ToString;
+use alloc::string::ToString;
 
-fn to_u16(a: u8, b: u8) -> u16 {
-    ((a as u16) << 8) + (b as u16)
-}
-
-fn check_packet_size(packet: &[u8]) -> Result<(), String> {
+fn check_packet_size(packet: &[u8], size_per_sample: usize) -> Result<(), String> {
     if packet.len() < 10 {
         return Err("Packet length must be at least 10 bytes.".to_string());
     }
 
     let n_scan = packet[3] as usize;
-    let expected = 10 + 3 * n_scan;
+    let expected = 10 + size_per_sample * n_scan;
     if packet.len() < expected {
-        return Err(
-            format!("Packet length does not match the expected size. \
-                     Expected = {}. Actual = {}.", expected, packet.len()));
+        return Err(format!(
+            "Packet length does not match the expected size. \
+                     Expected = {}. Actual = {}.",
+            expected,
+            packet.len()
+        ));
     }
 
     Ok(())
@@ -52,9 +52,9 @@ fn calc_checksum_tg15(packet: &[u8]) -> u16 {
     checksum
 }
 
-pub fn err_if_checksum_mismatched(packet: &[u8]) -> Result<(), String> {
-    check_packet_size(packet)?;
-    let calculated = calc_checksum(&packet);
+pub fn err_if_checksum_mismatched(packet: &[u8], size_per_sample: usize) -> Result<(), String> {
+    check_packet_size(packet, size_per_sample)?;
+    let calculated = calc_checksum_tg15(&packet);
     let expected = to_u16(packet[9], packet[8]);
     if calculated != expected {
         return Err(format!(
@@ -73,18 +73,22 @@ mod tests {
     fn test_check_packet_size() {
         assert_eq!(
             check_packet_size(&[0xAA, 0x55, 0xB0, 0x00, 0xE3, 0x28, 0xF3, 0x39, 0x0E]),
-            Err("Packet length must be at least 10 bytes.".to_string()));
+            Err("Packet length must be at least 10 bytes.".to_string())
+        );
 
         assert_eq!(
             check_packet_size(&[0xAA, 0x55, 0xB0, 0x00, 0xE3, 0x28, 0xF3, 0x39, 0x0E, 0x61]),
-            Ok(()));
+            Ok(())
+        );
 
         assert_eq!(
-            check_packet_size(
-                &[0xAA, 0x55, 0x24, 0x28, 0xF5, 0x4C,
-                  0x85, 0x5E, 0x9D, 0x70, 0xCE, 0xE2]),
+            check_packet_size(&[
+                0xAA, 0x55, 0x24, 0x28, 0xF5, 0x4C, 0x85, 0x5E, 0x9D, 0x70, 0xCE, 0xE2
+            ]),
             Err("Packet length does not match the expected size. \
-                 Expected = 130. Actual = 12.".to_string()));
+                 Expected = 130. Actual = 12."
+                .to_string())
+        );
     }
 
     #[test]
@@ -134,7 +138,7 @@ mod tests {
             0x01, 0x09, 0x03, 0x09, 0x05, 0x09, 0xAA, 0x55, 0x00, 0x28, 0x49, 0x8C, 0xE3, 0x8E,
             0xEF, 0x7E, 0x0A, 0x09, 0x0C, 0x09, 0x04, 0x09, 0xFF, 0x08, 0x0B, 0x09, 0x0F, 0x09,
             0x0A, 0x09, 0x0D, 0x09, 0x16, 0x09, 0x08, 0x09, 0x04, 0x09, 0x0F, 0x09, 0x0C, 0x09,
-            0xFE, 0x08, 0x0B, 0x09
+            0xFE, 0x08, 0x0B, 0x09,
         ];
         let checksum = calc_checksum_tg15(&packet);
         let expected = to_u16(packet[9], packet[8]);

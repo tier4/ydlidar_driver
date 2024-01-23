@@ -17,16 +17,15 @@ mod ydlidar_models;
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 use serialport::SerialPort;
-use ydlidar_signal_parser;
-use ydlidar_signal_parser::{validate_response_header, Scan, sendable_packet_range};
 use system_command::SystemCommand;
 use ydlidar_models::YdlidarModels;
-
+use ydlidar_signal_parser;
+use ydlidar_signal_parser::{sendable_packet_range, validate_response_header, Scan};
 
 fn check_device_health(
     port: &mut Box<dyn SerialPort>,
-    commands: &system_command::SystemCommand)
--> Result<(), String> {
+    commands: &system_command::SystemCommand,
+) -> Result<(), String> {
     serial::send_command(port, commands.get_devcice_health().unwrap());
     let header = serial::read(port, ydlidar_signal_parser::HEADER_SIZE).unwrap();
     validate_response_header(&header, Some(3), type_code::DEVHEALTH).unwrap();
@@ -91,7 +90,7 @@ fn extract_packet(buffer: &mut VecDeque<u8>) -> Result<Vec<u8>, &'static str> {
         return Err("Buffer is empty.");
     }
 
-    let (start_index, n_packet_bytes) = sendable_packet_range(&buffer)?;
+    let (start_index, n_packet_bytes) = sendable_packet_range(&buffer, 2)?;
 
     buffer.drain(..start_index); // remove leading bytes
     if buffer.len() < n_packet_bytes {
@@ -131,15 +130,16 @@ fn parse_packets(
             scan = Scan::new();
         }
 
-        if let Err(e) = ydlidar_signal_parser::err_if_checksum_mismatched(&packet) {
+        if let Err(e) = ydlidar_signal_parser::err_if_checksum_mismatched(&packet, 2) {
             eprintln!("{:?}", e);
             scan.checksum_correct = false;
         }
 
         ydlidar_signal_parser::calc_angles(&packet, &mut scan.angles_radian);
-        ydlidar_signal_parser::calc_distances(&packet, &mut scan.distances);
-        ydlidar_signal_parser::get_intensities(&packet, &mut scan.intensities);
-        ydlidar_signal_parser::get_flags(&packet, &mut scan.flags);
+        // ydlidar_signal_parser::calc_distances(&packet, &mut scan.distances);
+        ydlidar_signal_parser::calc_distances_tg15(&packet, &mut scan.distances);
+        // ydlidar_signal_parser::get_intensities(&packet, &mut scan.intensities);
+        // ydlidar_signal_parser::get_flags(&packet, &mut scan.flags);
     }
 }
 
@@ -157,7 +157,7 @@ pub struct DriverThreads {
 /// * `port_name` - Serial port name such as `/dev/ttyUSB0`.
 pub fn run_driver(port_name: &str) -> (DriverThreads, mpsc::Receiver<Scan>) {
     // let baud_rate = 230400; // fixed baud rate for YDLiDAR T-mini Pro
-    let baud_rate = 512000; // fixed baud rate for YDLiDAR T-mini Pro
+    let baud_rate = 512000; // fixed baud rate for YDLiDAR TG15
     let maybe_port = serialport::new(port_name, baud_rate)
         .timeout(std::time::Duration::from_millis(10))
         .open();

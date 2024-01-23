@@ -1,6 +1,8 @@
 use alloc::vec::Vec;
 use core::f64::consts;
 
+use crate::numeric::to_u16;
+
 fn to_angle(bit1: u8, bit2: u8) -> f64 {
     let a = ((bit1 as u16) + ((bit2 as u16) << 8)) >> 1;
     return (a as f64) / 64.;
@@ -41,8 +43,8 @@ pub fn calc_angles(packet: &[u8], angles_radian: &mut Vec<f64>) {
     }
 }
 
-fn scan_indices(n_scan_samples: usize) -> impl Iterator<Item = usize> {
-    (0..n_scan_samples).map(|i| (10 + i * 3) as usize)
+fn scan_indices(n_scan_samples: usize, size_per_sample: usize) -> impl Iterator<Item = usize> {
+    (0..n_scan_samples).map(move |i| (10 + i * size_per_sample) as usize)
 }
 
 /// Interference flag corresponding to the scan signal.
@@ -93,13 +95,13 @@ fn to_flag(value: u8) -> InterferenceFlag {
 }
 
 pub fn get_flags(packet: &[u8], flags: &mut Vec<InterferenceFlag>) {
-    for i in scan_indices(n_scan_samples(packet)) {
+    for i in scan_indices(n_scan_samples(packet), 3) {
         flags.push(to_flag(packet[i + 1] & 0x03));
     }
 }
 
 pub fn get_intensities(packet: &[u8], intensities: &mut Vec<u8>) {
-    for i in scan_indices(n_scan_samples(packet)) {
+    for i in scan_indices(n_scan_samples(packet), 3) {
         intensities.push(packet[i] as u8)
     }
 }
@@ -109,8 +111,15 @@ fn calc_distance(b1: u8, b2: u8) -> u16 {
 }
 
 pub fn calc_distances(packet: &[u8], distances: &mut Vec<u16>) {
-    for i in scan_indices(n_scan_samples(packet)) {
+    for i in scan_indices(n_scan_samples(packet), 3) {
         let d = calc_distance(packet[i + 1], packet[i + 2]);
+        distances.push(d);
+    }
+}
+
+pub fn calc_distances_tg15(packet: &[u8], distances: &mut Vec<u16>) {
+    for i in scan_indices(n_scan_samples(packet), 2) {
+        let d = to_u16(packet[i + 1], packet[i + 0]);
         distances.push(d);
     }
 }
