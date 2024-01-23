@@ -86,6 +86,22 @@ fn read_device_signal(
     }
 }
 
+fn extract_packet(buffer: &mut VecDeque<u8>) -> Result<Vec<u8>, &'static str> {
+    if buffer.len() == 0 {
+        return Err("Buffer is empty.");
+    }
+
+    let (start_index, n_packet_bytes) = sendable_packet_range(&buffer)?;
+
+    buffer.drain(..start_index); // remove leading bytes
+    if buffer.len() < n_packet_bytes {
+        return Err("Insufficient buffer size to extract a packet.");
+    }
+
+    let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<u8>>();
+    Ok(packet)
+}
+
 fn parse_packets(
     scan_data_rx: mpsc::Receiver<Vec<u8>>,
     parser_terminator_rx: Receiver<bool>,
@@ -107,20 +123,9 @@ fn parse_packets(
             }
         }
 
-        if buffer.len() == 0 {
+        let Ok(packet) = extract_packet(&mut buffer) else {
             continue;
-        }
-
-        let (start_index, n_packet_bytes) = match sendable_packet_range(&buffer) {
-            Ok(t) => t,
-            Err(_) => continue,
         };
-        buffer.drain(..start_index); // remove leading bytes
-        if buffer.len() < n_packet_bytes {
-            // insufficient buffer size to extract a packet
-            continue;
-        }
-        let packet = buffer.drain(0..n_packet_bytes).collect::<Vec<_>>();
         if ydlidar_signal_parser::is_beginning_of_cycle(&packet) {
             scan_tx.send(scan).unwrap();
             scan = Scan::new();
